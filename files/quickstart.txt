@@ -1,0 +1,11 @@
+Quick start
+Download the latest release: https://github.com/PluginyCS/BasePack/releases/latest
+Upload the package contents to your server (replace existing files if you know what you are doing).
+Configure reunion.cfg (see note below), then restart the server.
+Note: You should set SteamIdHashSalt. You can generate a random salt using our online tool at hash.pluginycs.pl
+
+Example: SteamIdHashSalt
+Add the following line to reunion.cfg:
+
+SteamIdHashSalt = 9f3a2b7c1d4e5f6081a2b3c4d5e6f7012a4c6e8f0b1d3f5a7c9e2d4f6a8b0c2d
+Save and restart the server. The warning about a missing or too-short SteamIdHashSalt should disappear.

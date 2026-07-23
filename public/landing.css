@@ -1,0 +1,350 @@
+/* CS 1.6 Panel — Landing Page Styles themed with Classic Steam 2003-2004 Olive Green Theme */
+
+:root {
+    --color-primary:    #4c5844;
+    --color-success:    #28a745;
+    --color-danger:     #dc3545;
+    --color-warning:    #ffc107;
+    --text-muted:       #788672;
+    --font-mono:        Consolas, "Courier New", monospace;
+    
+    /* Steam theme extensions */
+    --steam-bg-main: #384333;       /* Main window olive green */
+    --steam-bg-dark: #1e241b;       /* Nested panel dark background */
+    --steam-bg-light: #4c5844;      /* Button and highlights background */
+    --steam-bg-tab-inactive: #2d3529;
+    --steam-border-light: #5c6756;  /* Outer highlight borders */
+    --steam-border-dark: #282f24;   /* Inner shadows */
+    --steam-text-normal: #d6e0d3;   /* Light mint gray text */
+    --steam-text-bright: #ffffff;   /* Hover or active headers */
+    --steam-accent-green: #50e3c2;  /* Classic steam link/online status color */
+}
+
+/* Scrollbar styling - Steam Style */
+::-webkit-scrollbar {
+    width: 14px;
+    height: 14px;
+    background-color: var(--steam-bg-dark);
+}
+::-webkit-scrollbar-track {
+    border: 1px solid var(--steam-border-dark);
+    background-color: var(--steam-bg-dark);
+}
+::-webkit-scrollbar-thumb {
+    background-color: var(--steam-bg-light);
+    border: 2px solid var(--steam-bg-dark);
+}
+::-webkit-scrollbar-thumb:hover {
+    background-color: #596750;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    font-family: "Tahoma", "Segoe UI", "Verdana", sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: var(--steam-bg-main);
+    color: var(--steam-text-normal);
+    font-size: 13px;
+    -webkit-font-smoothing: none;
+}
+
+a {
+    color: var(--steam-accent-green);
+    text-decoration: none;
+}
+a:hover {
+    color: var(--steam-text-bright);
+    text-decoration: underline;
+}
+
+h1, h2, h3, h4 {
+    margin-top: 0;
+    margin-bottom: 8px;
+    color: var(--steam-text-bright);
+}
+
+/* ---- Buttons (identical to panel) ---- */
+button, .btn {
+    cursor: pointer;
+    font-family: "Tahoma", sans-serif;
+    font-size: 12px;
+    color: var(--steam-text-normal) !important;
+    background-color: var(--steam-bg-light) !important;
+    padding: 4px 14px;
+    border-top: 1px solid #63735a !important;
+    border-left: 1px solid #63735a !important;
+    border-right: 1px solid var(--steam-border-dark) !important;
+    border-bottom: 1px solid var(--steam-border-dark) !important;
+    border-radius: 0;
+    outline: none;
+}
+button:hover, .btn:hover {
+    background-color: #596750 !important;
+    color: var(--steam-text-bright) !important;
+    border-top-color: #728468 !important;
+    border-left-color: #728468 !important;
+}
+button:active, .btn:active {
+    background-color: var(--steam-bg-tab-inactive) !important;
+    border-top: 1px solid var(--steam-border-dark) !important;
+    border-left: 1px solid var(--steam-border-dark) !important;
+    border-right: 1px solid var(--steam-border-light) !important;
+    border-bottom: 1px solid var(--steam-border-light) !important;
+}
+
+.btn-primary { background-color: var(--steam-bg-light) !important; }
+.btn-secondary { background-color: var(--steam-bg-tab-inactive) !important; border-color: var(--steam-border-light) !important; }
+.btn-success { background-color: var(--steam-bg-light) !important; }
+.btn-sm { padding: 2px 8px; font-size: 11px; }
+
+.link-btn {
+    background: none;
+    border: none;
+    color: var(--steam-accent-green);
+    padding: 0;
+    font-size: inherit;
+    font-family: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* ---- Header ---- */
+.site-header {
+    background: var(--steam-bg-light);
+    border-bottom: 1px solid var(--steam-border-dark);
+    border-top: 1px solid #63735a;
+    border-left: 1px solid #63735a;
+    border-right: 1px solid var(--steam-border-dark);
+    margin: 10px 10px 0 10px;
+}
+.header-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 6px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: bold;
+    color: var(--steam-text-bright);
+}
+.logo-icon {
+    color: var(--steam-accent-green);
+    font-size: 14px;
+}
+.header-nav {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 12px;
+}
+.header-nav a {
+    color: var(--steam-text-normal);
+    font-weight: bold;
+}
+.header-nav a:hover { color: var(--steam-text-bright); text-decoration: none; }
+
+/* ---- Hero ---- */
+.hero {
+    margin: 0 10px 10px 10px;
+    padding: 24px;
+    background: var(--steam-bg-tab-inactive);
+    border-left: 1px solid var(--steam-border-light);
+    border-right: 1px solid var(--steam-border-light);
+    border-bottom: 1px solid var(--steam-border-light);
+}
+.hero-inner {
+    max-width: 780px;
+    margin: 0 auto;
+    text-align: center;
+}
+.hero-badge {
+    display: inline-block;
+    border: 1px dashed var(--steam-accent-green);
+    background: var(--steam-bg-dark);
+    padding: 2px 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 16px;
+    color: var(--steam-accent-green);
+    font-weight: bold;
+}
+.hero-title {
+    font-size: 28px;
+    font-weight: bold;
+    line-height: 1.25;
+    margin-bottom: 14px;
+    color: var(--steam-text-bright);
+}
+.hero-sub {
+    font-size: 13px;
+    color: var(--steam-text-normal);
+    margin-bottom: 24px;
+    line-height: 1.6;
+}
+.hero-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-bottom: 32px;
+}
+.hero-actions .btn {
+    padding: 6px 20px;
+}
+.hero-stats {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 20px;
+}
+.hero-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+.hero-stat-num {
+    font-size: 20px;
+    font-weight: bold;
+    color: var(--steam-text-bright);
+}
+.hero-stat-label {
+    font-size: 11px;
+    color: var(--steam-text-muted);
+}
+.hero-stat-sep {
+    width: 1px;
+    height: 30px;
+    background-color: var(--steam-border-dark);
+}
+
+/* ---- Section ---- */
+.section {
+    padding: 20px 10px;
+    margin: 0 10px 10px 10px;
+    background-color: var(--steam-bg-main);
+    border: 1px solid var(--steam-border-light);
+}
+.section-alt {
+    background-color: var(--steam-bg-tab-inactive);
+}
+.section-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+}
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--steam-border-light);
+    padding-bottom: 6px;
+    margin-bottom: 14px;
+}
+.section-header h2 {
+    font-size: 16px;
+    font-weight: bold;
+    color: var(--steam-text-bright);
+    margin: 0;
+}
+
+/* Tables */
+.server-table, .pricing-table {
+    width: 100%;
+    border-collapse: collapse;
+    background-color: var(--steam-bg-dark);
+    margin-bottom: 12px;
+}
+.server-table th, .pricing-table th {
+    background-color: var(--steam-bg-light) !important;
+    color: var(--steam-text-bright) !important;
+    font-weight: bold;
+    text-align: left;
+    padding: 6px;
+    border: 1px solid var(--steam-border-dark) !important;
+    font-size: 11px;
+}
+.server-table td, .pricing-table td {
+    padding: 6px;
+    border: 1px solid var(--steam-border-dark) !important;
+    font-size: 12px;
+    color: var(--steam-text-normal);
+}
+.server-table tr:nth-child(even) td, .pricing-table tr:nth-child(even) td {
+    background-color: rgba(255,255,255,0.02);
+}
+
+.table-note {
+    font-size: 11px;
+    color: var(--steam-text-muted);
+    margin-top: 8px;
+}
+
+/* Feature card styles */
+.features-table td.feature-card {
+    background: var(--steam-bg-tab-inactive);
+    border: 1px solid var(--steam-border-dark);
+    padding: 15px;
+    width: 33.333%;
+}
+.feature-icon {
+    font-size: 24px;
+    color: var(--steam-accent-green);
+    margin-bottom: 8px;
+}
+.feature-card h3 {
+    font-size: 14px;
+    font-weight: bold;
+    color: var(--steam-text-bright);
+    margin-bottom: 6px;
+}
+.feature-card p {
+    font-size: 12px;
+    color: var(--steam-text-normal);
+    line-height: 1.5;
+}
+
+/* Row Highlight in tables */
+.row-highlight td {
+    background-color: rgba(14, 165, 233, 0.04) !important;
+    border-color: var(--steam-accent-green) !important;
+}
+.check {
+    color: var(--steam-accent-green);
+    font-weight: bold;
+}
+
+/* Status state dot */
+.state-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+}
+.state-dot.online { background-color: var(--steam-accent-green); }
+.state-dot.offline { background-color: var(--steam-text-muted); }
+.status-online { color: var(--steam-accent-green); font-weight: bold; }
+.status-offline { color: var(--steam-text-muted); }
+
+/* ---- Footer ---- */
+.site-footer {
+    border-top: 1px solid var(--steam-border-dark);
+    padding: 16px 20px;
+    margin-top: 24px;
+    font-size: 11px;
+    color: var(--steam-text-muted);
+    background-color: var(--steam-bg-tab-inactive);
+}
+.footer-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}

@@ -1,0 +1,29 @@
+services:
+  cs-panel:
+    ports: !override
+      - "127.0.0.1:3100:3000"
+    environment:
+      - PANEL_PUBLIC_URL=http://localhost:3100
+      - PANEL_ADDITIONAL_ORIGINS=http://localhost:3100,http://127.0.0.1:3100
+      - PANEL_COOKIE_SECURE=false
+      - FASTDL_HOST=127.0.0.1
+      - FASTDL_PORT=18080
+      - MYSQL_PUBLIC_HOST=cs-mysql
+      - MYSQL_PUBLIC_PORT=3306
+      - PHP_PUBLIC_BASE_URL=http://127.0.0.1:18081
+
+  cs-fastdl:
+    ports: !override
+      - "127.0.0.1:18080:80"
+
+  cs-mysql:
+    ports: !override
+      - "127.0.0.1:3307:3306"
+
+  cs-php:
+    ports: !override
+      - "127.0.0.1:18081:80"
+
+  cs-bhop-web:
+    ports: !override
+      - "127.0.0.1:18082:80"

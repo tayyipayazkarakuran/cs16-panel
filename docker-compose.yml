@@ -1,0 +1,169 @@
+# =============================================================
+#  CS 1.6 Server Panel – Infrastructure Stack
+#  Usage:
+#    docker-compose up -d
+#    docker-compose down
+#    docker-compose logs -f cs-panel
+# =============================================================
+
+services:
+
+  # ----------------------------------------------------------
+  # CS Panel (Node.js management panel)
+  # ----------------------------------------------------------
+  cs-panel:
+    build:
+      context: .
+      dockerfile: panel.Dockerfile
+    container_name: cs-panel
+    restart: unless-stopped
+    ports:
+      - "${PANEL_BIND_HOST:-0.0.0.0}:${PANEL_HOST_PORT:-3000}:3000"
+    volumes:
+      # Docker socket – panel controls other containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Shared volumes so panel can write files directly
+      # Shared volumes so panel can write files directly
+      - ${FASTDL_HOST_PATH:-/opt/cspanel/fastdl-data}:/fastdl-data
+      - ${PHP_WWW_HOST_PATH:-/opt/cspanel/php-www}:/php-www
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=3000
+      # Public-facing host IP (server's actual public IP or domain)
+      - HOST_IP=${HOST_IP:-127.0.0.1}
+      # Panel public URL (used for cookie domain, CORS, redirects)
+      - PANEL_PUBLIC_URL=${PANEL_PUBLIC_URL:-http://localhost:3000}
+      - PANEL_ADDITIONAL_ORIGINS=${PANEL_ADDITIONAL_ORIGINS:-}
+      # FastDL
+      - FASTDL_PATH=/fastdl-data
+      - FASTDL_HOST_PATH=${FASTDL_HOST_PATH:-/opt/cspanel/fastdl-data}
+      - FASTDL_HOST=${FASTDL_HOST:-127.0.0.1}
+      - FASTDL_PORT=${FASTDL_PORT:-8080}
+      # MySQL internal (panel → mysql container)
+      - MYSQL_HOST=cs-mysql
+      - MYSQL_PORT=3306
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-cs_root_2024}
+      # MySQL public host (shown to clients / game servers for SQL cfg)
+      - MYSQL_PUBLIC_HOST=${MYSQL_PUBLIC_HOST:-${HOST_IP:-127.0.0.1}}
+      - MYSQL_PUBLIC_PORT=${MYSQL_PUBLIC_PORT:-3306}
+      # PHP public URL template (use {port} placeholder OR leave as base URL)
+      - PHP_PUBLIC_BASE_URL=${PHP_PUBLIC_BASE_URL:-http://${HOST_IP:-127.0.0.1}:8081}
+      # Panel authentication (override every value in production .env)
+      - PANEL_AUTH_SECRET=${PANEL_AUTH_SECRET:-cs-panel-dev-secret}
+      - PANEL_TOKEN_TTL_SECONDS=${PANEL_TOKEN_TTL_SECONDS:-86400}
+      - PANEL_AUTH_HANDOFF_TTL_SECONDS=${PANEL_AUTH_HANDOFF_TTL_SECONDS:-60}
+      - PANEL_ADMIN_USERNAME=${PANEL_ADMIN_USERNAME:-admin}
+      - PANEL_ADMIN_PASSWORD=${PANEL_ADMIN_PASSWORD:-admin123}
+      - PANEL_USER_USERNAME=${PANEL_USER_USERNAME:-user}
+      - PANEL_USER_PASSWORD=${PANEL_USER_PASSWORD:-user123}
+      # Destructive operations are blocked for rented/live servers on these ports
+      - PROTECTED_SERVER_PORTS=${PROTECTED_SERVER_PORTS:-27015,27016}
+      # PHP
+      - PHP_WWW_PATH=/php-www
+      - PHP_WWW_HOST_PATH=${PHP_WWW_HOST_PATH:-/opt/cspanel/php-www}
+    networks:
+      - cs-network
+    depends_on:
+      cs-mysql:
+        condition: service_healthy
+
+  # ----------------------------------------------------------
+  # FastDL (Nginx) – serves map/model/sound downloads
+  # ----------------------------------------------------------
+  cs-fastdl:
+    image: nginx:alpine
+    container_name: cs-fastdl
+    restart: unless-stopped
+    ports:
+      - "${FASTDL_BIND_HOST:-0.0.0.0}:${FASTDL_HOST_PORT:-8080}:80"
+    volumes:
+      - ${FASTDL_HOST_PATH:-/opt/cspanel/fastdl-data}:/var/www/fastdl:ro
+      - ./nginx-fastdl/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - cs-network
+
+  # ----------------------------------------------------------
+  # MySQL 8.0
+  # ----------------------------------------------------------
+  cs-mysql:
+    image: mysql:8.0
+    container_name: cs-mysql
+    restart: unless-stopped
+    ports:
+      # Database traffic is accessible publicly for game servers
+      - "${MYSQL_BIND_HOST:-0.0.0.0}:${MYSQL_HOST_PORT:-3306}:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-cs_root_2024}
+      - MYSQL_DATABASE=cs_panel
+      - MYSQL_ROOT_HOST=%
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - cs-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-cs_root_2024}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    command: --default-authentication-plugin=mysql_native_password
+
+  # ----------------------------------------------------------
+  # PHP 8.2 + Apache (custom image with mysqli / pdo_mysql)
+  # ----------------------------------------------------------
+  cs-php:
+    build:
+      context: .
+      dockerfile: php.Dockerfile
+    container_name: cs-php
+    restart: unless-stopped
+    ports:
+      - "${PHP_BIND_HOST:-0.0.0.0}:${PHP_HOST_PORT:-8081}:80"
+    volumes:
+      - ${PHP_WWW_HOST_PATH:-/opt/cspanel/php-www}:/var/www/html
+      - ./php-root-index.php:/var/www/html/index.php:ro
+      - ./php-root-prepend.php:/var/www/html/.prepend.php:ro
+    networks:
+      - cs-network
+
+  # ----------------------------------------------------------
+  # Bhop Standalone Website (PHP 8.2 + Apache)
+  # ----------------------------------------------------------
+  cs-bhop-web:
+    build:
+      context: .
+      dockerfile: bhop-web.Dockerfile
+    container_name: cs-bhop-web
+    restart: unless-stopped
+    ports:
+      - "${BHOP_BIND_HOST:-0.0.0.0}:${BHOP_HOST_PORT:-8082}:80"
+    volumes:
+      - ./bhop-website:/var/www/html
+    environment:
+      - BHOP_DB_HOST=cs-mysql
+      - BHOP_DB_PORT=3306
+      - BHOP_DB_DB=cs_srv_27015
+      - BHOP_DB_USER=csu_27015
+      - BHOP_DB_PASS=${BHOP_DB_PASS:-changeme}
+      - BHOP_DB_PREFIX=bhop_
+      - BHOP_GAME_HOST=cs16-server-27015
+      - BHOP_GAME_PORT=27015
+      - BHOP_PUBLIC_CONNECT=${GAME_SERVER_HOST:-example.com}:27015
+    networks:
+      - cs-network
+
+
+# ----------------------------------------------------------
+# Named Volumes
+# ----------------------------------------------------------
+volumes:
+  mysql-data:
+    name: cs-mysql-data
+
+# ----------------------------------------------------------
+# Shared Network (CS game servers also join this)
+# ----------------------------------------------------------
+networks:
+  cs-network:
+    name: cs-network
+    driver: bridge

@@ -1,0 +1,14 @@
+.env
+node_modules/
+servers/
+uploads/
+backups/
+*.tar.gz
+__pycache__/
+*.pyc
+.tmp-*/
+.deploy-*/
+.opencode/
+.DS_Store
+Thumbs.db
+
