@@ -29,9 +29,19 @@ function sendError(res, error) {
 }
 
 async function requireRunning(container) {
-    const info = await container.inspect();
+    let info;
+    try {
+        info = await container.inspect();
+    } catch (error) {
+        if (error.statusCode === 404) {
+            const missing = new Error('Sunucu konteyneri bulunamadı. "Başlat" ile sunucuyu verileri korunarak yeniden oluşturabilirsiniz.');
+            missing.statusCode = 409;
+            throw missing;
+        }
+        throw error;
+    }
     if (!info.State.Running) {
-        const error = new Error('Server is not running. Start the server to manage files.');
+        const error = new Error('Sunucu çalışmıyor. Dosyaları yönetmek için sunucuyu başlatın.');
         error.statusCode = 503;
         throw error;
     }

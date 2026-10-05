@@ -8,7 +8,7 @@
     "test": "node --test tests/*.test.js",
     "test:integration": "node tests/docker.integration.js",
     "test:local-stack": "node tests/local-stack.integration.js",
-    "check": "node --check server.js && node --check panelDb.js && node --check serverProtection.js && node --check containerFsHelper.js && node --check fastdlService.js && node --check routes/files.js && node --check routes/maps.js && node --check routes/payments.js && node --check routes/plugins.js && node --check routes/servers.js && node --check public/app.js"
+    "check": "node scripts/check.js"
   },
   "dependencies": {
     "compression": "^1.8.1",

@@ -4,16 +4,15 @@ A Docker-based management panel for Counter-Strike 1.6 game servers. Create, man
 
 ## Features
 
-- **Server Management** — Create, start, stop, and delete CS 1.6 server containers
-- **File Manager** — Upload and manage server files (maps, plugins, configs)
-- **Plugin System** — AMX Mod X plugin compilation and management
-- **FastDL** — Automatic Fast Download file hosting for maps/models/sounds
-- **MySQL** — Per-server MySQL database provisioning
-- **PHP Support** — Per-server PHP hosting area
-- **Real-time Console** — Live server console via WebSocket with RCON support
-- **Server Pool** — Auto-maintained pool of ready-to-use server instances
-- **Payment Integration** — Rental/extension billing support (İyzico)
-- **Admin Panel** — User management, server oversight, system settings
+- **Membership** — Self sign-up (username + e-mail + terms), password strength rules, login by username or e-mail, account lockout and rate limiting, single-use password-reset links, "log out of all devices", notifications.
+- **Billing & paywall** — Balance ledger (every credit/debit is recorded), bank-transfer deposits with reference codes and receipt review, admin-defined plans (price, slots, FPS, features), 1/3/6/12-month periods with discounts, coupons, trial plan, auto-renew, expiry reminders (7/3/1 days), automatic suspension (HTTP 402 paywall) and reclamation after a grace period.
+- **Admin tools** — Dashboard with revenue/server metrics, user management (balance adjust, suspend, reset link, force logout, delete), server operations (extend, suspend, transfer, change plan, release, bulk actions), payment review, plans & coupons, announcements, infrastructure health/restart, maintenance mode, settings and a full audit log.
+- **Server Management** — Start/stop/restart (containers are recreated automatically if missing), reset, live console over WebSocket, logs and crash logs, validated `server.cfg` settings.
+- **File Manager** — Upload with progress, folders, drag & drop, ZIP extraction, rename, mkdir, streamed downloads, in-browser editor.
+- **FastDL** — Automatic sync of client assets; config files (`*.cfg`, `*.ini`) are never published.
+- **MySQL** — One database + user per server, password rotation, schema browser, query console scoped to the server's own database, SQL export. Credentials are written to `addons/amxmodx/configs/sql.cfg` and the website config automatically.
+- **PHP websites** — Each server gets an isolated site (`open_basedir`, separate sessions/tmp, disabled dangerous functions, panel cookie stripped). Ready-made community template (live server status, players, settings page), blank template, ZIP upload, custom domains.
+- **Admin Panel / Landing** — Fully rewritten responsive UI (vanilla ES modules, no `innerHTML`).
 
 ## Architecture
 
@@ -66,9 +65,9 @@ This starts: `cs-panel`, `cs-fastdl`, `cs-mysql`, `cs-php`, and `cs-bhop-web`.
 
 Open `http://localhost:3000` in your browser.
 
-Default logins (change in production):
-- Admin: `admin` / `admin123`
-- User: `user` / `user123`
+Default logins (you will be asked to change the password on first login):
+- Admin: `admin` / `admin123` (or `PANEL_ADMIN_PASSWORD`)
+- User: `user` / `user123` (or `PANEL_USER_PASSWORD`)
 
 ### 4. Create a Game Server
 
@@ -102,50 +101,26 @@ npm run test:integration
 
 ```
 cs16-panel/
-├── server.js                 # Main Express application
-├── panelDb.js                # Database layer (MySQL + auth tokens)
-├── serverProtection.js       # Protected port management
-├── containerFsHelper.js      # Docker container filesystem utilities
-├── fastdlService.js          # FastDL file sync service
-├── poolService.js            # Server pool auto-maintenance
-├── queryHelper.js            # CS 1.6 server query (A2S, RCON)
-├── docker-compose.yml        # Production Docker stack
-├── docker-compose.local.yml  # Local development overrides
-├── panel.Dockerfile          # Panel image build
-├── php.Dockerfile            # PHP/Apache image build
-├── frontend.Dockerfile       # Next.js frontend build
-├── bhop-web.Dockerfile       # Bhop website image build
-├── Dockerfile                # Legacy panel build
-├── .env.example              # Environment variable template
-│
-├── routes/                   # Express API routes
-│   ├── servers.js            # Server CRUD & lifecycle
-│   ├── files.js              # File upload/manager
-│   ├── plugins.js            # AMX plugin management
-│   ├── maps.js               # Map upload & listing
-│   ├── admins.js             # Server admin management
-│   ├── players.js            # Player management
-│   ├── fastdl.js             # FastDL file hosting
-│   ├── mysql.js              # MySQL account provisioning
-│   ├── php.js                # PHP hosting management
-│   ├── phpProxy.js           # Public PHP proxy
-│   ├── payments.js           # Payment/rental integration
-│   ├── admin.js              # Admin oversight routes
-│   └── payments.js           # İyzico payment processing
-│
-├── public/                   # Frontend assets (vanilla JS SPA)
-│   ├── index.html            # Login & panel entry
-│   ├── landing.html          # Public landing page
-│   ├── app.js                # Panel SPA logic
-│   ├── style.css             # Main styles
-│   └── assets/               # Images & graphics
-│
-├── nginx-fastdl/             # FastDL Nginx configuration
-├── scripts/                  # Deployment & maintenance
-│   └── live_safe_ops.py      # Safe production operations
-├── tests/                    # Test suite
-├── files/                    # CS 1.6 base game files (HLDS)
-└── servers/                  # Per-server data volumes
+├── server.js              # Express app, security headers, WebSocket console, lifecycle timer
+├── config.js              # Single source of public URLs / hosts (FastDL, PHP, MySQL)
+├── panelDb.js             # Schema + versioned migrations, users, ledger, plans, coupons, audit
+├── security.js            # Cookies, origin (CSRF) checks, rate limiting, CSP
+├── billingService.js      # Quotes, rentals, renewals, plan changes
+├── lifecycleService.js    # Reminders, auto-renew, suspension, reclamation
+├── poolService.js         # Rental pool maintenance (setting: pool_ports)
+├── gameContainer.js       # Game container creation/recreation
+├── phpSiteService.js      # Per-server PHP sites, templates, domains
+├── fastdlService.js       # FastDL sync
+├── zipReader.js           # Safe ZIP parsing (no traversal / zip bombs)
+├── containerFsHelper.js   # Container filesystem helpers
+├── routes/                # auth, account, servers, files, plugins, maps, players,
+│                          # admins, fastdl, mysql, sites, php, payments, admin
+├── public/                # index.html, css/app.css, js/{core,main}.js, js/views/*, landing.*
+├── php/                   # Apache vhost, php.ini, prepend, entrypoint for cs-php
+├── php-templates/         # Website templates (community, blank)
+├── nginx-fastdl/          # FastDL nginx config
+├── scripts/check.js       # Syntax check for every JS file (npm run check)
+└── tests/                 # node:test suites + mock Docker (PANEL_MOCK_DOCKER=1)
 ```
 
 ## Production Deployment
@@ -158,12 +133,20 @@ cs16-panel/
 
 ## Security Notes
 
-- Change all default passwords in `.env` before going to production
-- The `.env` file is excluded from version control via `.gitignore`
-- Ports 27015 and 27016 are protected by default against accidental deletion
-- API authentication uses JWT-like tokens with configurable TTL
-- CORS is restricted to configured panel origins in production
-- Sensitive operations (delete, reset) are blocked for protected ports
+- `MYSQL_ROOT_PASSWORD` is required; MySQL is bound to `127.0.0.1` unless `MYSQL_BIND_HOST` is changed.
+- If `PANEL_AUTH_SECRET` is empty, a random secret is generated and stored in the database.
+- Seeded `admin`/`user` accounts are never overwritten on restart; default passwords force a password change.
+- Session cookie is host-only and `HttpOnly`; state-changing requests must come from the panel origin.
+- Sessions are revoked on password change / "log out everywhere" (token versioning).
+- Ports listed in `PROTECTED_SERVER_PORTS` cannot be reset or deleted.
+
+## Upgrading from the previous version (TR)
+
+1. `.env` dosyasında `MYSQL_ROOT_PASSWORD` tanımlı olmalı (artık zorunlu).
+2. İmajları yeniden derleyin: `docker compose build cs-panel cs-php` ve oyun imajı (entrypoint değişti).
+3. Panel ilk açılışta veritabanını otomatik taşır (migration); eski fiyat ayarları paketlere dönüştürülür.
+4. Web siteleri için `PHP_PUBLIC_BASE_URL` ayarlayın. Özel alan adı kullanılacaksa alan adının A kaydı PHP sunucusunu göstermelidir; `{port}` içeren bir adres (`http://php-{port}.example.com`) wildcard DNS ile alt alan adı kullanır.
+5. FastDL adresi `FASTDL_PUBLIC_URL` ile belirlenir; kiralama havuzu portları Yönetim → Ayarlar → `pool_ports` ile değiştirilir.
 
 ## License
 

@@ -65,8 +65,9 @@ app.use(express.static(PUBLIC_DIR, {
     etag: true,
     setHeaders: (res, filePath) => {
         if (/\.(?:css|js)$/i.test(filePath)) {
-            // Assets are referenced with ?v=<release>; revalidate cheaply via ETag.
-            res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate');
+            // ES modules import each other without version suffixes, so always
+            // revalidate (cheap 304 via ETag) to keep a deploy consistent.
+            res.setHeader('Cache-Control', 'no-cache');
         } else if (/\.(?:webp|png|jpg|svg|ico|woff2?)$/i.test(filePath)) {
             res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
         } else if (/\.html$/i.test(filePath)) {

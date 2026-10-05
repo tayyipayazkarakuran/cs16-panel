@@ -1,238 +1,94 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CS 1.6 Server Panel — Server Rental & Dashboard</title>
-    <meta name="description" content="Counter-Strike 1.6 server rental and management panel. Live server browser, easy setup, FastDL and MySQL support.">
-    <link rel="stylesheet" href="landing.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>CS 1.6 Sunucu Kiralama</title>
+    <meta name="description" content="Counter-Strike 1.6 sunucu kiralama: 1000 FPS ReHLDS, canlı konsol, FastDL, sunucuya özel MySQL ve hazır PHP web sitesi.">
+    <link rel="stylesheet" href="css/app.css?v=3.0.0">
+    <link rel="stylesheet" href="landing.css?v=3.0.0">
 </head>
-<body>
-
-<!-- ===================== HEADER / NAV ===================== -->
-<header class="site-header">
-    <div class="header-inner">
-        <div class="logo">
-            <span class="logo-icon">&#9632;</span>
-            <strong>CS 1.6 Panel</strong>
-        </div>
-        <nav class="header-nav">
-            <a href="#servers">Servers</a>
-            <a href="#features">Features</a>
-            <a href="#pricing">Pricing</a>
-            <a href="https://panel.example.com/" class="btn btn-secondary btn-sm" style="text-decoration:none; display:inline-block; line-height:24px; text-align:center;">Login</a>
-            <a href="https://panel.example.com/" class="btn btn-primary btn-sm" style="text-decoration:none; display:inline-block; line-height:24px; text-align:center;">Register</a>
+<body class="landing">
+<header class="l-header">
+    <div class="l-wrap l-header-inner">
+        <a class="brand" href="/landing"><span class="brand-mark">CS</span><span data-site-name>CS 1.6 Panel</span></a>
+        <nav class="l-nav" aria-label="Sayfa bölümleri">
+            <a href="#sunucular">Sunucular</a>
+            <a href="#ozellikler">Özellikler</a>
+            <a href="#fiyatlar">Fiyatlar</a>
         </nav>
+        <div class="btn-group">
+            <a class="btn btn-ghost" href="/#/login">Giriş</a>
+            <a class="btn btn-primary" href="/#/register">Üye ol</a>
+        </div>
     </div>
 </header>
 
-<!-- ===================== HERO ===================== -->
-<section class="hero">
-    <div class="hero-inner">
-        <div class="hero-badge">Counter-Strike 1.6 Hosting</div>
-        <h1 class="hero-title">Professional CS 1.6<br>Server Management</h1>
-        <p class="hero-sub">ReHLDS architecture, live console access, FastDL, MySQL and PHP support for complete server control.</p>
-        <div class="hero-actions">
-            <a href="https://panel.example.com/" class="btn btn-primary" style="text-decoration:none; display:inline-block; line-height:36px; text-align:center;">Get Started</a>
-            <a href="#servers" class="btn btn-secondary">Live Servers</a>
-        </div>
-        <div class="hero-stats">
-            <div class="hero-stat">
-                <span class="hero-stat-num" id="stat-total-servers">—</span>
-                <span class="hero-stat-label">Active Servers</span>
+<main>
+    <section class="l-hero">
+        <div class="l-wrap">
+            <span class="badge badge-accent">Counter-Strike 1.6 Hosting</span>
+            <h1>Sunucunu kirala,<br>dakikalar içinde oyuna başla.</h1>
+            <p class="lead">ReHLDS altyapısı, canlı konsol, eklenti ve harita yöneticisi, otomatik FastDL, sunucuya özel MySQL veritabanı ve tek tıkla kurulan web sitesi — hepsi tek panelde.</p>
+            <div class="btn-group">
+                <a class="btn btn-primary" href="/#/register">Hemen başla</a>
+                <a class="btn" href="#fiyatlar">Fiyatları gör</a>
             </div>
-            <div class="hero-stat-sep"></div>
-            <div class="hero-stat">
-                <span class="hero-stat-num" id="stat-total-players">—</span>
-                <span class="hero-stat-label">Online Players</span>
+            <dl class="l-stats">
+                <div><dt>Aktif sunucu</dt><dd id="stat-servers">—</dd></div>
+                <div><dt>Çevrimiçi oyuncu</dt><dd id="stat-players">—</dd></div>
+                <div><dt>Sunucu FPS</dt><dd>1000</dd></div>
+            </dl>
+        </div>
+    </section>
+
+    <section class="l-section" id="sunucular">
+        <div class="l-wrap">
+            <div class="l-section-head">
+                <div><h2>Canlı sunucu listesi</h2><p class="muted">Panelimizde barındırılan sunucular, anlık olarak.</p></div>
+                <button class="btn btn-sm" type="button" id="refresh-servers">Yenile</button>
             </div>
-            <div class="hero-stat-sep"></div>
-            <div class="hero-stat">
-                <span class="hero-stat-num">1000</span>
-                <span class="hero-stat-label">Max FPS</span>
+            <div class="card">
+                <div class="table-wrap">
+                    <table class="table">
+                        <thead><tr><th>Sunucu</th><th>Adres</th><th>Harita</th><th class="num">Oyuncu</th><th>Durum</th></tr></thead>
+                        <tbody id="server-rows"><tr><td colspan="5" class="table-empty">Yükleniyor…</td></tr></tbody>
+                    </table>
+                </div>
             </div>
         </div>
-    </div>
-</section>
+    </section>
 
-<!-- ===================== LIVE SERVER LIST ===================== -->
-<section class="section" id="servers">
-    <div class="section-inner">
-        <div class="section-header">
-            <h2>Live Server Browser</h2>
-            <button id="btn-refresh-servers" class="btn btn-secondary btn-sm">Refresh</button>
+    <section class="l-section l-alt" id="ozellikler">
+        <div class="l-wrap">
+            <div class="l-section-head"><div><h2>Neden bizimle?</h2><p class="muted">Sunucu sahiplerinin ihtiyaç duyduğu her şey hazır gelir.</p></div></div>
+            <div class="l-features">
+                <article class="card"><h3>Canlı konsol & RCON</h3><p>Sunucu çıktısını canlı izleyin, komutları tek tıkla gönderin.</p></article>
+                <article class="card"><h3>Eklenti yöneticisi</h3><p>.sma derleyin, .amxx yükleyin, plugins.ini sırasını düzenleyin.</p></article>
+                <article class="card"><h3>Harita & FastDL</h3><p>Yüklediğiniz haritalar otomatik olarak hızlı indirme sunucusuna eşitlenir.</p></article>
+                <article class="card"><h3>Sunucuya özel MySQL</h3><p>İstatistik eklentileri için hazır veritabanı, tarayıcıdan sorgu ve yedek.</p></article>
+                <article class="card"><h3>Hazır web sitesi</h3><p>Canlı durum ve sıralama gösteren site tek tıkla kurulur; kendi alan adınızı bağlayın.</p></article>
+                <article class="card"><h3>Güvenli & izole</h3><p>Her müşteri ayrı konteyner, ayrı veritabanı ve izole PHP ortamında çalışır.</p></article>
+            </div>
         </div>
+    </section>
 
-        <table class="server-table" id="public-server-table" width="100%" border="0" cellpadding="8" cellspacing="0">
-            <thead>
-                <tr>
-                    <th align="left">Server Name</th>
-                    <th align="left">IP / Port</th>
-                    <th align="left">Map</th>
-                    <th align="left">Players</th>
-                    <th align="left">FPS</th>
-                    <th align="left">Status</th>
-                </tr>
-            </thead>
-            <tbody id="server-table-body">
-                <tr><td colspan="6" class="loading-cell">Loading servers...</td></tr>
-            </tbody>
-        </table>
-
-        <p class="table-note">Servers in this list are updated in real-time. You can manage your server by <a href="https://panel.example.com/" class="link-btn" style="text-decoration:underline; font-weight:bold; color:#50e3c2; background:none;">logging in</a>.</p>
-    </div>
-</section>
-
-<!-- ===================== FEATURES ===================== -->
-<section class="section section-alt" id="features">
-    <div class="section-inner">
-        <div class="section-header">
-            <h2>Features</h2>
+    <section class="l-section" id="fiyatlar">
+        <div class="l-wrap">
+            <div class="l-section-head"><div><h2>Paketler</h2><p class="muted">Uzun dönemlerde ek indirim otomatik uygulanır.</p></div></div>
+            <div class="plans" id="plans"><div class="loading-block"><div class="spinner"></div>Paketler yükleniyor…</div></div>
         </div>
-        <table class="features-table" width="100%" border="0" cellpadding="0" cellspacing="20">
-            <tr>
-                <td class="feature-card" valign="top">
-                    <div class="feature-icon">&#128196;</div>
-                    <h3>Full File Manager</h3>
-                    <p>View, edit, or upload every file on your server directly from your browser. Directory uploads are also supported.</p>
-                </td>
-                <td class="feature-card" valign="top">
-                    <div class="feature-icon">&#9881;</div>
-                    <h3>Plugin Management</h3>
-                    <p>Upload, compile AMX Mod X plugins, and order the plugins.ini list using drag-and-drop.</p>
-                </td>
-                <td class="feature-card" valign="top">
-                    <div class="feature-icon">&#127758;</div>
-                    <h3>Map Management</h3>
-                    <p>Upload .bsp map files, edit mapcycle.txt, and distribute them to players instantly via FastDL.</p>
-                </td>
-            </tr>
-            <tr>
-                <td class="feature-card" valign="top">
-                    <div class="feature-icon">&#128421;</div>
-                    <h3>Live Console</h3>
-                    <p>Monitor server logs in real-time and send RCON commands over WebSocket.</p>
-                </td>
-                <td class="feature-card" valign="top">
-                    <div class="feature-icon">&#128424;</div>
-                    <h3>MySQL & PHP</h3>
-                    <p>Custom MySQL database and PHP web server for every server port, manageable directly from the dashboard.</p>
-                </td>
-                <td class="feature-card" valign="top">
-                    <div class="feature-icon">&#9889;</div>
-                    <h3>FastDL Support</h3>
-                    <p>Automatically synchronize custom maps and models so players connect to your server instantly.</p>
-                </td>
-            </tr>
-        </table>
-    </div>
-</section>
+    </section>
+</main>
 
-<!-- ===================== PRICING ===================== -->
-<section class="section" id="pricing">
-    <div class="section-inner">
-        <div class="section-header">
-            <h2>Pricing Plans</h2>
-        </div>
-        <table class="pricing-table" width="100%" border="0" cellpadding="8" cellspacing="0">
-            <thead>
-                <tr>
-                    <th align="left">Plan</th>
-                    <th align="center">Max Players</th>
-                    <th align="center">FPS Engine</th>
-                    <th align="center">FastDL</th>
-                    <th align="center">MySQL</th>
-                    <th align="center">PHP</th>
-                    <th align="center">Price</th>
-                    <th align="center">Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr class="row-highlight">
-                    <td><strong>Standard Plan</strong></td>
-                    <td align="center">24</td>
-                    <td align="center">800 FPS</td>
-                    <td align="center"><span class="check">✓</span></td>
-                    <td align="center"><span class="check">✓</span></td>
-                    <td align="center"><span class="check">✓</span></td>
-                    <td align="center"><strong style="color: #ffd700;">250 TL / 30 Days</strong></td>
-                    <td align="center"><a href="https://panel.example.com/" class="btn btn-primary btn-sm" style="text-decoration:none; display:inline-block; line-height:20px; text-align:center;">Rent Server</a></td>
-                </tr>
-                <tr>
-                    <td><strong>Pro Plan</strong></td>
-                    <td align="center">32</td>
-                    <td align="center">1000 FPS</td>
-                    <td align="center"><span class="check">✓</span></td>
-                    <td align="center"><span class="check">✓</span></td>
-                    <td align="center"><span class="check">✓</span></td>
-                    <td align="center"><strong style="color: #ffd700;">350 TL / 30 Days</strong></td>
-                    <td align="center"><a href="https://panel.example.com/" class="btn btn-primary btn-sm" style="text-decoration:none; display:inline-block; line-height:20px; text-align:center;">Rent Server</a></td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
-</section>
-
-<!-- ===================== FOOTER ===================== -->
-<footer class="site-footer">
-    <div class="footer-inner">
-        <span><strong>CS 1.6 Panel</strong> &mdash; Counter-Strike 1.6 Server Management</span>
-        <span>
-            <a href="https://panel.example.com/" class="link-btn" style="text-decoration:underline; color:#50e3c2;">Login</a>
-            &nbsp;|&nbsp;
-            <a href="https://panel.example.com/" class="link-btn" style="text-decoration:underline; color:#50e3c2;">Register</a>
-        </span>
+<footer class="l-footer">
+    <div class="l-wrap l-footer-inner">
+        <span>© <span id="year"></span> <span data-site-name>CS 1.6 Panel</span></span>
+        <span class="muted" id="support"></span>
+        <span class="btn-group"><a href="/#/login">Giriş</a><a href="/#/register">Üye ol</a></span>
     </div>
 </footer>
-
-<script>
-// ---- Public Server List ----
-async function loadServers() {
-    const tbody = document.getElementById('server-table-body');
-    try {
-        const res  = await fetch('/api/servers/public');
-        const data = await res.json();
-        const servers = data.servers || [];
-
-        let totalPlayers = 0;
-        let html = '';
-
-        if (servers.length === 0) {
-            html = '<tr><td colspan="6" class="loading-cell" style="color:var(--steam-text-muted);">No active servers found.</td></tr>';
-        } else {
-            for (const s of servers) {
-                totalPlayers += (s.players || 0);
-                const statusClass = s.status === 'online' ? 'status-online' : 'status-offline';
-                const statusText  = s.status === 'online' ? 'Online' : 'Offline';
-                const dotClass    = s.status === 'online' ? 'state-dot online' : 'state-dot offline';
-                html += `
-                <tr>
-                    <td><strong>${escHtml(s.name || 'CS 1.6 Server')}</strong></td>
-                    <td><code>${s.ip || 'cs.example.com'}:${s.port || '—'}</code></td>
-                    <td>${escHtml(s.map || '—')}</td>
-                    <td>${s.players !== null && s.players !== undefined ? `${s.players} / ${s.maxplayers || 32}` : '—'}</td>
-                    <td>${s.fps ? Math.round(s.fps) + ' FPS' : '—'}</td>
-                    <td><span class="${dotClass}"></span><span class="${statusClass}">${statusText}</span></td>
-                </tr>`;
-            }
-        }
-
-        tbody.innerHTML = html;
-        document.getElementById('stat-total-servers').textContent = servers.length;
-        document.getElementById('stat-total-players').textContent = totalPlayers;
-    } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="6" class="loading-cell" style="color:#f43f5e;">Failed to fetch server list.</td></tr>';
-    }
-}
-
-function escHtml(str) {
-    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-document.getElementById('btn-refresh-servers').addEventListener('click', loadServers);
-loadServers();
-setInterval(loadServers, 30000);
-
-</script>
+<script src="landing.js?v=3.0.0" defer></script>
 </body>
 </html>

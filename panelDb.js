@@ -438,7 +438,7 @@ const MIGRATIONS = [
                     ['standard', 'Standart', 'Topluluk sunucuları için dengeli paket.', parseFloat(legacy.price_standard || '250'), 30,
                         parseInt(legacy.max_players_standard || '24', 10), '1000 FPS ReHLDS\nAMX Mod X + eklenti yöneticisi\nFastDL, MySQL ve PHP web sitesi\nGünlük yedek dostu dosya yönetimi', 0, 0, 1, 10],
                     ['pro', 'Pro', 'Yoğun ve rekabetçi sunucular için en yüksek slot.', parseFloat(legacy.price_pro || '350'), 30,
-                        parseInt(legacy.max_players_pro || '32', 10), '32 slota kadar\n1000 FPS ReHLDS\nÖncelikli destek\nÖzel alan adıyla web sitesi', 0, 1, 1, 20]
+                        parseInt(legacy.max_players_pro || '32', 10), '1000 FPS ReHLDS\nÖncelikli destek\nÖzel alan adıyla web sitesi\nFastDL, MySQL ve PHP web sitesi', 0, 1, 1, 20]
                 ];
                 for (const p of plans) {
                     await pool.query(

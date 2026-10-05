@@ -231,15 +231,24 @@ router.post('/:id/auto-renew', async (req, res) => {
 
 async function powerAction(req, res, action) {
     try {
-        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
-        const container = req.docker.getContainer(req.params.id);
+        let record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        let container = req.docker.getContainer(req.params.id);
         try {
             if (action === 'start') await container.start();
             else if (action === 'stop') await container.stop({ t: 10 });
             else await container.restart({ t: 10 });
         } catch (e) {
-            // 304 = already in the requested state; that's success for the user.
-            if (e.statusCode !== 304) throw e;
+            if (e.statusCode === 404 && action !== 'stop') {
+                // The container vanished (manual docker rm, host migration...).
+                // Rebuild it on the existing volume so no game data is lost.
+                const plan = await req.panelDb.getPlan(record.plan_type);
+                record = await billing.recreateContainerKeepingData(req.docker, record, { maxPlayers: (plan && plan.max_players) || 24 });
+                container = req.docker.getContainer(record.container_id);
+                await audit(req, 'server.recreate', record.port);
+            } else if (e.statusCode !== 304) {
+                // 304 = already in the requested state; that's success for the user.
+                throw e;
+            }
         }
         invalidateLive(req.params.id);
         if (action !== 'stop') {
@@ -247,7 +256,7 @@ async function powerAction(req, res, action) {
         }
         await audit(req, `server.${action}`, record.port);
         const labels = { start: 'başlatıldı', stop: 'durduruldu', restart: 'yeniden başlatıldı' };
-        res.json({ success: true, message: `Sunucu ${labels[action]}.` });
+        res.json({ success: true, message: `Sunucu ${labels[action]}.`, containerId: record.container_id });
     } catch (e) {
         routeError(res, e);
     }

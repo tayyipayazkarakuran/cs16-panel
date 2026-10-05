@@ -7,7 +7,8 @@ const express = require('express');
 
 const protection = require('../serverProtection');
 const serversRouter = require('../routes/servers');
-const serverRoutesSource = fs.readFileSync(path.join(__dirname, '..', 'routes', 'servers.js'), 'utf8');
+const billingSource = fs.readFileSync(path.join(__dirname, '..', 'billingService.js'), 'utf8');
+const gameContainerSource = fs.readFileSync(path.join(__dirname, '..', 'gameContainer.js'), 'utf8');
 
 test('default protected ports include 27015 and 27016', () => {
     assert.equal(protection.isProtectedPort(27015), true);
@@ -51,7 +52,10 @@ test('reset route rejects a protected port before touching its container', async
 });
 
 test('rental keeps the requested RCON password consistent between database and container', () => {
-    assert.match(serverRoutesSource, /rcon_password = \?/);
-    assert.match(serverRoutesSource, /RCON_PASSWORD=\$\{requestedRconPassword\}/);
-    assert.doesNotMatch(serverRoutesSource, /RCON_PASSWORD=\$\{sRecord\.db_password/);
+    // The rental transaction stores the requested password and the container
+    // is built from that same record field.
+    assert.match(billingSource, /rcon_password = \?/);
+    assert.match(billingSource, /rconPassword: record\.rcon_password/);
+    assert.match(gameContainerSource, /RCON_PASSWORD=\$\{rconPassword\}/);
+    assert.doesNotMatch(gameContainerSource, /RCON_PASSWORD=\$\{[^}]*db_password/);
 });
