@@ -5,7 +5,10 @@ const path = require('path');
 const multer = require('multer');
 const fastdl = require('../fastdlService');
 
-const upload = multer({ storage: multer.memoryStorage() });
+const cfg = require('../config');
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 256 * 1024 * 1024, files: 1 } });
+const UPLOAD_EXTS = /\.(bsp|wad|mdl|spr|wav|mp3|tga|res|txt|bmp)$/i;
 
 function routeError(res, e) {
     res.status(e.statusCode || 500).json({ error: e.message });
@@ -26,7 +29,7 @@ router.get('/status', (req, res) => {
     res.json({
         available: ok,
         fastdlPath: req.user.role === 'admin' ? fastdl.FASTDL_PATH : 'scoped',
-        fastdlUrl: `http://fastdl.example.com`,
+        fastdlUrl: cfg.fastdlBaseUrl(),
         host: fastdl.FASTDL_HOST,
         port: fastdl.FASTDL_PORT
     });
@@ -63,7 +66,8 @@ router.delete('/:port/file', (req, res) => {
         const relFile = req.query.path;
         if (!relFile) return res.status(400).json({ error: 'Missing path' });
 
-        const fullPath = fastdl.resolveInside(fastdl.fastdlDir(port), relFile);
+        const fullPath = fastdl.resolveInside(fastdl.fastdlDir(port), String(relFile));
+        if (fullPath === fastdl.resolveInside(fastdl.fastdlDir(port), '')) return res.status(400).json({ error: 'FastDL kök klasörü silinemez' });
         if (fs.existsSync(fullPath)) {
             fs.rmSync(fullPath, { recursive: true, force: true });
         }
@@ -79,10 +83,12 @@ router.post('/:port/upload', upload.single('file'), (req, res) => {
         const port = parsePort(req.params.port);
         if (!req.file) return res.status(400).json({ error: 'No file' });
 
-        const subDir = req.body.subdir || '';
+        const subDir = String(req.body.subdir || '').replace(/\\/g, '/');
         const dir = fastdl.resolveInside(fastdl.fastdlDir(port), subDir);
         fastdl.ensureDir(dir);
-        const destPath = fastdl.resolveInside(dir, path.basename(req.file.originalname));
+        const filename = path.basename(req.file.originalname);
+        if (!UPLOAD_EXTS.test(filename)) return res.status(400).json({ error: 'Yalnızca oyun istemcisinin indirdiği dosya türleri yüklenebilir (bsp, wad, mdl, spr, wav, mp3, tga, res, txt, bmp).' });
+        const destPath = fastdl.resolveInside(dir, filename);
         fs.writeFileSync(destPath, req.file.buffer);
 
         res.json({ success: true, message: `${req.file.originalname} uploaded to FastDL.` });

@@ -3,6 +3,30 @@ const router = express.Router();
 const queryHelper = require('../queryHelper');
 const cFs = require('../containerFsHelper');
 
+const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
+const STEAM_RE = /^(STEAM_[0-5]:[01]:\d{1,12}|VALVE_[0-5]:[01]:\d{1,12}|BOT|HLTV)$/i;
+
+function badRequest(message) {
+    const err = new Error(message);
+    err.statusCode = 400;
+    return err;
+}
+
+function iniField(value, label, { max = 64, required = true } = {}) {
+    const text = String(value === undefined || value === null ? '' : value).trim();
+    if (required && !text) throw badRequest(`${label} zorunludur.`);
+    if (text.length > max || /["\r\n;]/.test(text)) throw badRequest(`${label} geçersiz karakter içeriyor (" ; satır sonu) veya çok uzun.`);
+    return text;
+}
+
+function banTarget(target, isIp) {
+    const value = String(target || '').trim();
+    if (isIp ? !IP_RE.test(value) : !STEAM_RE.test(value)) {
+        throw badRequest(isIp ? 'Geçerli bir IPv4 adresi girin.' : 'Geçerli bir SteamID girin (örn. STEAM_0:1:12345).');
+    }
+    return value;
+}
+
 router.use('/:id', async (req, res, next) => {
     try {
         req.serverRecord = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
@@ -100,7 +124,7 @@ router.get('/:id', async (req, res) => {
             bans: [...ipBans, ...authBans]
         });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(e.statusCode || 500).json({ error: e.message });
     }
 });
 
@@ -109,11 +133,12 @@ router.post('/:id/add', async (req, res) => {
     try {
         const container = req.docker.getContainer(req.params.id);
         const inspect = await container.inspect();
-        const { auth, password, access, flags, comment } = req.body;
-
-        if (!auth || !access || !flags) {
-            return res.status(400).json({ error: 'auth, access, and flags are required' });
-        }
+        const auth = iniField(req.body.auth, 'SteamID / Nick / IP');
+        const password = iniField(req.body.password, 'Şifre', { required: false });
+        const access = iniField(req.body.access, 'Yetki bayrakları', { max: 32 });
+        const flags = iniField(req.body.flags, 'Giriş tipi', { max: 8 });
+        const comment = iniField(req.body.comment, 'Not', { max: 100, required: false }).replace(/[\r\n]/g, ' ');
+        if (!/^[a-z]+$/.test(access) || !/^[a-e]+$/.test(flags)) return res.status(400).json({ error: 'Geçersiz yetki veya giriş bayrağı.' });
 
         const usersIniPath = 'addons/amxmodx/configs/users.ini';
         let originalContent = '';
@@ -122,8 +147,14 @@ router.post('/:id/add', async (req, res) => {
         }
 
         // Format line
-        const adminLine = `\n"${auth}" "${password || ''}" "${access}" "${flags}" ; ${comment || 'Added via Web Panel'}`;
-        await cFs.writeFile(container, usersIniPath, originalContent + adminLine);
+        const exists = originalContent.split(/\r?\n/).some(line => {
+            const m = line.trim().match(/^"([^"]*)"/);
+            return m && m[1] === auth;
+        });
+        if (exists) return res.status(409).json({ error: 'Bu yetkili zaten users.ini içinde kayıtlı.' });
+        const adminLine = `"${auth}" "${password}" "${access}" "${flags}" ; ${comment || 'Panel üzerinden eklendi'}`;
+        const separator = originalContent && !originalContent.endsWith('\n') ? '\n' : '';
+        await cFs.writeFile(container, usersIniPath, `${originalContent}${separator}${adminLine}\n`);
 
         // Reload admins in-game if running
         if (inspect.State.Running) {
@@ -135,10 +166,7 @@ router.post('/:id/add', async (req, res) => {
                     break;
                 }
             }
-            const env = inspect.Config.Env;
-            let rconPassword = 'rcon123';
-            const rconEnv = env.find(e => e.startsWith('RCON_PASSWORD='));
-            if (rconEnv) rconPassword = rconEnv.split('=')[1];
+            const rconPassword = req.serverRecord.rcon_password || '';
 
             if (port) {
                 const ip = queryHelper.getServerIp(inspect);
@@ -148,7 +176,7 @@ router.post('/:id/add', async (req, res) => {
 
         res.json({ success: true, message: 'Admin added successfully' });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(e.statusCode || 500).json({ error: e.message });
     }
 });
 
@@ -195,10 +223,7 @@ router.post('/:id/delete', async (req, res) => {
                     break;
                 }
             }
-            const env = inspect.Config.Env;
-            let rconPassword = 'rcon123';
-            const rconEnv = env.find(e => e.startsWith('RCON_PASSWORD='));
-            if (rconEnv) rconPassword = rconEnv.split('=')[1];
+            const rconPassword = req.serverRecord.rcon_password || '';
 
             if (port) {
                 const ip = queryHelper.getServerIp(inspect);
@@ -208,15 +233,16 @@ router.post('/:id/delete', async (req, res) => {
 
         res.json({ success: true, message: 'Admin deleted successfully' });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(e.statusCode || 500).json({ error: e.message });
     }
 });
 
 // POST /api/admins/:id/ban - Ban a player
 router.post('/:id/ban', async (req, res) => {
     try {
-        const { target, duration, isIp } = req.body;
-        if (!target) return res.status(400).json({ error: 'Target IP or SteamID is required' });
+        const isIp = req.body.isIp === true || req.body.isIp === 'true';
+        const target = banTarget(req.body.target, isIp);
+        const duration = Math.max(0, Math.min(525600, parseInt(req.body.duration, 10) || 0));
 
         const container = req.docker.getContainer(req.params.id);
         const inspect = await container.inspect();
@@ -233,14 +259,11 @@ router.post('/:id/ban', async (req, res) => {
                 break;
             }
         }
-        const env = inspect.Config.Env;
-        let rconPassword = 'rcon123';
-        const rconEnv = env.find(e => e.startsWith('RCON_PASSWORD='));
-        if (rconEnv) rconPassword = rconEnv.split('=')[1];
+        const rconPassword = req.serverRecord.rcon_password || '';
 
         if (!port) return res.status(400).json({ error: 'Server port mapping not found' });
 
-        const time = duration || 0;
+        const time = duration;
         let rconCmd = '';
         
         if (isIp) {
@@ -253,15 +276,15 @@ router.post('/:id/ban', async (req, res) => {
         const response = await queryHelper.sendRconCommand(ip, port, rconPassword, rconCmd);
         res.json({ success: true, message: `Ban command executed`, response });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(e.statusCode || 500).json({ error: e.message });
     }
 });
 
 // POST /api/admins/:id/unban - Remove ban
 router.post('/:id/unban', async (req, res) => {
     try {
-        const { target, isIp } = req.body;
-        if (!target) return res.status(400).json({ error: 'Target IP or SteamID is required' });
+        const isIp = req.body.isIp === true || req.body.isIp === 'true';
+        const target = banTarget(req.body.target, isIp);
 
         const container = req.docker.getContainer(req.params.id);
         const inspect = await container.inspect();
@@ -272,7 +295,7 @@ router.post('/:id/unban', async (req, res) => {
             if (await cFs.fileExists(container, banFile)) {
                 let content = await cFs.readFile(container, banFile);
                 let lines = content.split('\n');
-                let newLines = lines.filter(l => !l.includes(target));
+                let newLines = lines.filter(l => l.trim().split(/\s+/)[2] !== target);
                 await cFs.writeFile(container, banFile, newLines.join('\n'));
                 return res.json({ success: true, message: `Target ${target} unbanned offline` });
             }
@@ -287,10 +310,7 @@ router.post('/:id/unban', async (req, res) => {
                 break;
             }
         }
-        const env = inspect.Config.Env;
-        let rconPassword = 'rcon123';
-        const rconEnv = env.find(e => e.startsWith('RCON_PASSWORD='));
-        if (rconEnv) rconPassword = rconEnv.split('=')[1];
+        const rconPassword = req.serverRecord.rcon_password || '';
 
         let rconCmd = '';
         if (isIp) {
@@ -303,7 +323,7 @@ router.post('/:id/unban', async (req, res) => {
         const response = await queryHelper.sendRconCommand(ip, port, rconPassword, rconCmd);
         res.json({ success: true, message: `Unban command executed`, response });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(e.statusCode || 500).json({ error: e.message });
     }
 });
 

@@ -343,7 +343,108 @@ if os.path.lexists(target):
     await runExec(container, { Cmd: ['python3', '-c', pythonScript, targetPath] });
 }
 
+async function makeDir(container, relPath) {
+    const targetPath = cstrikePath(relPath, { allowEmpty: false });
+    await runExec(container, {
+        Cmd: ['python3', '-c', 'import os, sys; os.makedirs(sys.argv[1], exist_ok=False)', targetPath]
+    });
+}
+
+/** Rename/move inside cstrike. Refuses to overwrite an existing target. */
+async function movePath(container, fromRel, toRel) {
+    const from = cstrikePath(fromRel, { allowEmpty: false });
+    const to = cstrikePath(toRel, { allowEmpty: false });
+    const script = `
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+if not os.path.lexists(src):
+    sys.exit('Source does not exist')
+if os.path.lexists(dst):
+    sys.exit('Target already exists')
+os.makedirs(os.path.dirname(dst), exist_ok=True)
+os.rename(src, dst)
+`;
+    await runExec(container, { Cmd: ['python3', '-c', script, from, to] });
+}
+
+/**
+ * Extract a .zip that already lives inside cstrike into a target folder.
+ * Entries escaping the target, symlinks and oversized archives are rejected.
+ */
+async function extractZip(container, zipRel, destRel) {
+    const zipPath = cstrikePath(zipRel, { allowEmpty: false });
+    const destPath = cstrikePath(destRel || '');
+    const script = `
+import json, os, stat, sys, zipfile
+zip_path, dest = sys.argv[1], os.path.realpath(sys.argv[2])
+limit = 1024 * 1024 * 1024
+written = 0
+count = 0
+with zipfile.ZipFile(zip_path) as archive:
+    infos = archive.infolist()
+    if sum(i.file_size for i in infos) > limit:
+        sys.exit('Archive expands beyond 1 GB')
+    for info in infos:
+        mode = (info.external_attr >> 16) & 0xFFFF
+        if stat.S_ISLNK(mode):
+            continue
+        target = os.path.realpath(os.path.join(dest, info.filename))
+        if os.path.commonpath([dest, target]) != dest:
+            sys.exit('Unsafe path in archive: ' + info.filename)
+        if info.is_dir():
+            os.makedirs(target, exist_ok=True)
+            continue
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with archive.open(info) as src, open(target, 'wb') as out:
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > limit:
+                    sys.exit('Archive expands beyond 1 GB')
+                out.write(chunk)
+        count += 1
+print(json.dumps({'files': count, 'bytes': written}))
+`;
+    const result = await runExec(container, { Cmd: ['python3', '-c', script, zipPath, destPath] }, { timeoutMs: 300000 });
+    return JSON.parse(result.output.trim().split('\n').pop() || '{}');
+}
+
+/**
+ * Stream one regular file out of the container via the archive API (no
+ * base64 round trip, no full in-memory copy). Resolves with { name, size, stream }.
+ */
+function openFileStream(container, relPath) {
+    const targetFile = cstrikePath(relPath, { allowEmpty: false });
+    return new Promise((resolve, reject) => {
+        container.getArchive({ path: targetFile }, (error, archive) => {
+            if (error) return reject(error);
+            const extract = tar.extract();
+            let found = false;
+            extract.on('entry', (header, stream, next) => {
+                if (found || header.type !== 'file') {
+                    stream.on('end', next);
+                    stream.resume();
+                    return;
+                }
+                found = true;
+                resolve({ name: path.posix.basename(header.name), size: header.size, stream, done: next });
+            });
+            extract.on('finish', () => { if (!found) reject(Object.assign(new Error('Not a regular file'), { statusCode: 400 })); });
+            extract.on('error', reject);
+            archive.on('error', reject);
+            archive.pipe(extract);
+        });
+    });
+}
+
 module.exports = {
+    makeDir,
+    movePath,
+    extractZip,
+    openFileStream,
+    decodeDockerOutput,
     cstrikePath,
     fileExists,
     listFiles,

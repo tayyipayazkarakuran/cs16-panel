@@ -1,1226 +1,547 @@
 const express = require('express');
-const router = express.Router();
-const net = require('net');
-const fs = require('fs');
-const path = require('path');
 const queryHelper = require('../queryHelper');
 const fastdl = require('../fastdlService');
 const containerFs = require('../containerFsHelper');
-const { PROTECTED_SERVER_PORTS, assertDestructiveOperationAllowed, isProtectedPort } = require('../serverProtection');
+const gameContainer = require('../gameContainer');
+const billing = require('../billingService');
+const cfg = require('../config');
+const security = require('../security');
+const { assertDestructiveOperationAllowed, isProtectedPort } = require('../serverProtection');
 
-const PHP_WWW_PATH = process.env.PHP_WWW_PATH || path.join(__dirname, '..', 'php-www');
-
-// Resolve public-facing service URLs from env (set in docker-compose / .env)
-const PANEL_PUBLIC_URL = (process.env.PANEL_PUBLIC_URL || 'http://localhost:3000').replace(/\/$/, '');
-const FASTDL_HOST = process.env.FASTDL_HOST || '127.0.0.1';
-const FASTDL_PORT = process.env.FASTDL_PORT || '8080';
-const MYSQL_PUBLIC_HOST = process.env.MYSQL_PUBLIC_HOST || process.env.MYSQL_HOST || '127.0.0.1';
-const MYSQL_PUBLIC_PORT = parseInt(process.env.MYSQL_PUBLIC_PORT || process.env.MYSQL_PORT || '3306', 10);
-const PHP_PUBLIC_BASE_URL = process.env.PHP_PUBLIC_BASE_URL || `http://${FASTDL_HOST}:8081`;
-
-/** Build the public FastDL URL for a given port */
-function publicFastdlUrl(port) {
-    const portStr = (FASTDL_PORT === '80' || FASTDL_PORT === '443') ? '' : `:${FASTDL_PORT}`;
-    return `http://${FASTDL_HOST}${portStr}/${port}/`;
-}
-
-/** Build the public PHP URL for a given port */
-function publicPhpUrl(port) {
-    // If PHP_PUBLIC_BASE_URL contains '{port}', replace it; else append ?p=<port>
-    if (PHP_PUBLIC_BASE_URL.includes('{port}')) {
-        return PHP_PUBLIC_BASE_URL.replace('{port}', port);
-    }
-    return `${PHP_PUBLIC_BASE_URL}/?p=${port}`;
-}
-
-// In-memory cache for server stats (FPS, CPU) to prevent spamming RCON logs
-const statsCache = {};
+const router = express.Router();
 
 function routeError(res, e) {
-    res.status(e.statusCode || 500).json({ error: e.message });
+    const status = e.statusCode || 500;
+    if (status >= 500) console.error('[Servers]', e.message);
+    res.status(status).json({ error: e.message, code: e.code });
 }
 
-function resolveInside(base, rel = '') {
-    const resolvedBase = path.resolve(base);
-    const resolved = path.resolve(resolvedBase, rel);
-    if (resolved !== resolvedBase && !resolved.startsWith(resolvedBase + path.sep)) {
-        const err = new Error('Access denied');
-        err.statusCode = 403;
-        throw err;
-    }
-    return resolved;
-}
-
-function ensurePhpArea(serverRecord) {
-    if (!serverRecord || !serverRecord.php_path) return;
-    const phpDir = resolveInside(PHP_WWW_PATH, serverRecord.php_path);
-    if (!fs.existsSync(phpDir)) fs.mkdirSync(phpDir, { recursive: true });
-    const htaccessPath = path.join(phpDir, '.htaccess');
-    if (!fs.existsSync(htaccessPath)) {
-        fs.writeFileSync(htaccessPath, 'Options -Indexes\n');
-    }
-}
-
-function removePhpArea(serverRecord) {
-    if (!serverRecord || !serverRecord.php_path) return;
-    const phpDir = resolveInside(PHP_WWW_PATH, serverRecord.php_path);
-    if (fs.existsSync(phpDir)) fs.rmSync(phpDir, { recursive: true, force: true });
-}
-
-// Wait for the game container to finish its initial setup (hlds_clean copy)
-async function waitForContainerReady(container, maxWaitMs = 120000) {
-    const start = Date.now();
-    while (Date.now() - start < maxWaitMs) {
-        try {
-            const info = await container.inspect();
-            if (!info.State.Running) {
-                await new Promise(r => setTimeout(r, 1000));
-                continue;
-            }
-            // server.cfg is copied as part of the clean image setup
-            if (await containerFs.fileExists(container, 'server.cfg')) {
-                return true;
-            }
-        } catch (e) {
-            // container may still be starting; ignore and retry
-        }
-        await new Promise(r => setTimeout(r, 2000));
-    }
-    return false;
-}
-
-async function syncFastdlWithRetry(container, port, categories = null, retries = 5, delayMs = 2000) {
-    let lastError;
-    for (let i = 0; i < retries; i++) {
-        try {
-            return await fastdl.syncFastdlFromContainer(container, port, categories);
-        } catch (e) {
-            lastError = e;
-            console.log(`FastDL sync attempt ${i + 1}/${retries} failed for port ${port}:`, e.message);
-            if (i < retries - 1) await new Promise(r => setTimeout(r, delayMs));
-        }
-    }
-    throw lastError;
-}
-
-async function ensureSvDownloadUrl(container, port) {
-    const fastdlHost = process.env.FASTDL_HOST || '127.0.0.1';
-    const fastdlPort = process.env.FASTDL_PORT || '8080';
-    const svDownloadUrl = `http://${fastdlHost}:${fastdlPort}/${port}/`;
-
-    const pythonScript = `
-import sys, re
-cfg_path = '/hlds/cstrike/server.cfg'
-url = sys.argv[1]
-try:
-    with open(cfg_path, 'r', encoding='utf-8', errors='ignore') as f:
-        content = f.read()
-    if 'sv_downloadurl' not in content:
-        content += '\\nsv_downloadurl "' + url + '"\\n'
-    else:
-        content = re.sub(r'sv_downloadurl\\s+"[^"]*"', 'sv_downloadurl "' + url + '"', content)
-        content = re.sub(r"sv_downloadurl\\s+'[^']*'", 'sv_downloadurl "' + url + '"', content)
-    with open(cfg_path, 'w', encoding='utf-8') as f:
-        f.write(content)
-    print('OK')
-except Exception as e:
-    print('ERR:', e)
-`;
-    try {
-        await containerFs.runExec(container, {
-            Cmd: ['python3', '-c', pythonScript, svDownloadUrl],
-            AttachStdout: true,
-            AttachStderr: true
-        });
-    } catch (e) {
-        console.log('ensureSvDownloadUrl warning:', e.message);
-    }
-    return svDownloadUrl;
-}
-
-async function ensureSqlCfg(container, serverRecord) {
-    if (!serverRecord || !serverRecord.db_name) return;
-
-    const host = MYSQL_PUBLIC_HOST;
-    const user = serverRecord.db_username;
-    const pass = serverRecord.db_password;
-    const db = serverRecord.db_name;
-
-    const pythonScript = `
-import sys, re, os
-cfg_path = '/hlds/cstrike/addons/amxmodx/configs/sql.cfg'
-host = sys.argv[1]
-user = sys.argv[2]
-password = sys.argv[3]
-database = sys.argv[4]
-
-try:
-    os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
-    content = ""
-    if os.path.exists(cfg_path):
-        with open(cfg_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
-
-    # Update or add configurations
-    def update_cfg(cfg_text, key, val):
-        pattern = r'^\\s*' + key + r'\\s+"[^"]*"'
-        repl = key + ' "' + val + '"'
-        if re.search(pattern, cfg_text, re.M):
-            return re.sub(pattern, repl, cfg_text, flags=re.M)
-        else:
-            return cfg_text.strip() + '\\n' + repl + '\\n'
-
-    content = update_cfg(content, 'amx_sql_host', host)
-    content = update_cfg(content, 'amx_sql_user', user)
-    content = update_cfg(content, 'amx_sql_pass', password)
-    content = update_cfg(content, 'amx_sql_db', database)
-    content = update_cfg(content, 'amx_sql_table', 'csstats')
-    content = update_cfg(content, 'amx_sql_type', 'mysql')
-
-    with open(cfg_path, 'w', encoding='utf-8') as f:
-        f.write(content)
-    print('OK')
-except Exception as e:
-    print('ERR:', e)
-`;
-    try {
-        await containerFs.runExec(container, {
-            Cmd: ['python3', '-c', pythonScript, host, user, pass, db],
-            AttachStdout: true,
-            AttachStderr: true
-        });
-    } catch (e) {
-        console.log('ensureSqlCfg warning:', e.message);
-    }
-}
-
-// Helper to check if a port is in use on the host
-function isPortInUse(port) {
-    return new Promise((resolve) => {
-        const tester = net.createServer()
-            .once('error', (err) => {
-                if (err.code === 'EADDRINUSE') resolve(true);
-                else resolve(false);
-            })
-            .once('listening', () => {
-                tester.once('close', () => resolve(false)).close();
-            })
-            .listen(port);
+function audit(req, action, port, details = null) {
+    return req.panelDb.logAudit({
+        actorId: req.user.id, actorName: req.user.username, action,
+        targetType: 'server', targetId: port, details, ip: security.clientIp(req)
     });
 }
 
-// Helper to find next free port starting from 27015
-async function findFreePort(docker, startPort = 27015) {
-    let port = startPort;
-    const containers = await docker.listContainers({ all: true });
-    
-    // Collect all ports used by docker containers
-    const usedPorts = new Set();
-    containers.forEach(c => {
-        if (c.Ports && c.Ports.length > 0) {
-            c.Ports.forEach(p => {
-                if (p.PublicPort) {
-                    usedPorts.add(p.PublicPort);
-                }
+// ---------------------------------------------------------------------------
+//  Live status (A2S + RCON stats) with caching and in-flight de-duplication
+// ---------------------------------------------------------------------------
+
+const LIVE_TTL_MS = 10000;
+const STATS_TTL_MS = 60000;
+const liveCache = new Map();   // containerId -> { at, data }
+const statsCache = new Map();  // containerId -> { at, stats }
+const inflight = new Map();
+
+async function liveStatus(container, record, inspect) {
+    const key = container.id;
+    const cached = liveCache.get(key);
+    if (cached && Date.now() - cached.at < LIVE_TTL_MS) return cached.data;
+    if (inflight.has(key)) return inflight.get(key);
+
+    const promise = (async () => {
+        const port = gameContainer.gamePortFromInspect(inspect) || record.port;
+        const ip = queryHelper.getServerIp(inspect);
+        const statsEntry = statsCache.get(key);
+        const statsPromise = statsEntry && Date.now() - statsEntry.at < STATS_TTL_MS
+            ? Promise.resolve(statsEntry.stats)
+            : queryHelper.getServerStats(ip, port, record.rcon_password || '')
+                .then(stats => { statsCache.set(key, { at: Date.now(), stats }); return stats; })
+                .catch(() => ({ fps: 0, cpu: 0 }));
+        const [info, stats] = await Promise.all([queryHelper.getServerInfo(ip, port), statsPromise]);
+        const data = info.online
+            ? { online: true, name: info.name, map: info.map, players: info.players, maxPlayers: info.maxPlayers, fps: stats.fps || 0, cpu: stats.cpu || 0 }
+            : { online: false };
+        liveCache.set(key, { at: Date.now(), data });
+        return data;
+    })().finally(() => inflight.delete(key));
+    inflight.set(key, promise);
+    return promise;
+}
+
+function invalidateLive(containerId) {
+    liveCache.delete(containerId);
+}
+
+async function serializeServer(req, record, summary, plansBySlug) {
+    const env = {};
+    let inspect = null;
+    let live = { online: false };
+    if (summary) {
+        try {
+            inspect = await req.docker.getContainer(summary.Id).inspect();
+            (inspect.Config.Env || []).forEach(e => {
+                const i = e.indexOf('=');
+                env[e.slice(0, i)] = e.slice(i + 1);
             });
-        }
-    });
-
-    while (true) {
-        if (usedPorts.has(port) || await isPortInUse(port)) {
-            port++;
-        } else {
-            return port;
-        }
+            if (summary.State === 'running' && !record.suspended) {
+                live = await liveStatus({ id: summary.Id }, record, inspect);
+            }
+        } catch (_) { /* container vanished between list and inspect */ }
     }
+    const plan = plansBySlug.get(record.plan_type);
+    const port = record.port;
+    return {
+        id: record.container_id,
+        dbId: record.id,
+        name: live.online ? live.name : (record.name || env.SERVER_NAME || `Server ${port}`),
+        owner: record.owner_username,
+        owner_id: record.owner_id,
+        ip: cfg.gameServerHost,
+        address: `${cfg.gameServerHost}:${port}`,
+        port,
+        state: summary ? summary.State : 'missing',
+        statusText: summary ? summary.Status : 'Konteyner bulunamadı',
+        online: !!live.online,
+        map: live.online ? live.map : (env.START_MAP || 'de_dust2'),
+        players: live.online ? live.players : 0,
+        maxPlayers: live.online ? live.maxPlayers : parseInt(env.MAXPLAYERS || (plan && plan.max_players) || 32, 10),
+        fps: live.fps || 0,
+        cpu: live.cpu || 0,
+        plan_type: record.plan_type,
+        plan_name: plan ? plan.name : record.plan_type,
+        plan_is_trial: plan ? plan.is_trial : false,
+        expires_at: record.expires_at,
+        rented_at: record.rented_at,
+        auto_renew: !!record.auto_renew,
+        suspended: !!record.suspended,
+        suspended_reason: record.suspended_reason || null,
+        is_pool: !!record.is_pool,
+        protected: isProtectedPort(port),
+        sql: record.db_name ? {
+            database: record.db_name,
+            username: record.db_username,
+            host: cfg.mysql.internalHost,
+            port: cfg.mysql.internalPort,
+            externalHost: cfg.mysql.publicHost || null,
+            externalPort: cfg.mysql.publicHost ? cfg.mysql.publicPort : null
+        } : null,
+        php: { url: cfg.phpSiteUrl(port), domain: record.php_domain || null },
+        fastdl: { url: cfg.fastdlUrl(port) }
+    };
 }
 
-// In-memory cache for live server status/queries to drastically reduce dashboard loading latency
-const serverStatusCache = {};
-
-// GET /api/servers - List all CS 1.6 server containers with status
+// GET /api/servers — servers the user can manage (admins: everything)
 router.get('/', async (req, res) => {
     try {
-        const containers = await req.docker.listContainers({ all: true });
-        let serverRecords;
+        const [containers, records, plans] = await Promise.all([
+            req.docker.listContainers({ all: true }),
+            req.panelDb.listServersForUser(req.user),
+            req.panelDb.listPlans({ activeOnly: false })
+        ]);
+        const plansBySlug = new Map(plans.map(p => [p.slug, p]));
+        const containersById = new Map(containers.map(c => [c.Id, c]));
+        const known = new Set(records.map(r => r.container_id));
+
+        // Admins also see stray cs16-server-* containers so they can be adopted.
         if (req.user.role === 'admin') {
-            serverRecords = await req.panelDb.listServersForUser(req.user);
-        } else {
-            const owned = await req.panelDb.listServersForUser(req.user);
-            const pool = await req.panelDb.listUnrentedPoolServers();
-            serverRecords = [...owned, ...pool];
-        }
-        const recordsById = new Map(serverRecords.map(r => [r.container_id, r]));
-        
-        // Filter containers running our cs16 image by name pattern or database association
-        const csContainers = containers
-            .filter(c => c.Names.some(n => n.includes('cs16-server-')) || recordsById.has(c.Id))
-            .filter(c => req.user.role === 'admin' || recordsById.has(c.Id));
-        
-        const now = Date.now();
-        const cacheTTL = 10000; // 10 seconds cache TTL for live UDP/RCON queries
-        
-        const servers = await Promise.all(csContainers.map(async (c) => {
-            try {
-                // Check memory cache first
-                const cached = serverStatusCache[c.Id];
-                if (cached && (now - cached.timestamp < cacheTTL) && cached.state === c.State) {
-                    return {
-                        ...cached.data,
-                        state: c.State,
-                        statusText: c.Status
-                    };
-                }
-
-                let serverRecord = recordsById.get(c.Id);
-                if (!serverRecord) {
-                    serverRecord = await req.panelDb.requireServerAccess(req.user, req.docker, c.Id);
-                }
-                const container = req.docker.getContainer(c.Id);
-                const info = await container.inspect();
-                
-                // Get port bindings
-                let port = 27015;
-                const portBindings = info.HostConfig.PortBindings;
-                for (const key in portBindings) {
-                    if (key.endsWith('/udp')) {
-                        port = parseInt(portBindings[key][0].HostPort);
-                        break;
+            for (const c of containers) {
+                if (!known.has(c.Id) && (c.Names || []).some(n => /cs16-server-\d+$/.test(n))) {
+                    try {
+                        records.push(await req.panelDb.requireServerAccess(req.user, req.docker, c.Id));
+                    } catch (e) {
+                        console.log(`Adopt skipped for ${c.Id.slice(0, 12)}:`, e.message);
                     }
                 }
-
-                // Get env settings
-                const env = info.Config.Env;
-                let rconPassword = serverRecord.rcon_password || 'rcon123';
-                let maxPlayers = 32;
-                let currentMap = 'de_dust2';
-                let name = `Server ${port}`;
-
-                const maxPlayersEnv = env.find(e => e.startsWith('MAXPLAYERS='));
-                if (maxPlayersEnv) maxPlayers = parseInt(maxPlayersEnv.split('=')[1]);
-
-                const mapEnv = env.find(e => e.startsWith('START_MAP='));
-                if (mapEnv) currentMap = mapEnv.split('=')[1];
-
-                const nameEnv = env.find(e => e.startsWith('SERVER_NAME='));
-                if (nameEnv) name = nameEnv.split('=')[1];
-
-                let status = {
-                    name,
-                    map: currentMap,
-                    players: 0,
-                    maxPlayers,
-                    online: false,
-                    fps: 0,
-                    cpu: 0
-                };
-
-                if (c.State === 'running') {
-                    const ip = queryHelper.getServerIp(info);
-                    
-                    // Run A2S_INFO query and RCON stats queries in parallel
-                    const liveInfoPromise = queryHelper.getServerInfo(ip, port);
-                    
-                    const statsCached = statsCache[c.Id];
-                    let statsPromise;
-                    if (statsCached && (now - statsCached.timestamp < 60000)) {
-                        statsPromise = Promise.resolve(statsCached.stats);
-                    } else {
-                        statsPromise = queryHelper.getServerStats(ip, port, rconPassword).then(stats => {
-                            statsCache[c.Id] = {
-                                stats: { fps: stats.fps, cpu: stats.cpu },
-                                timestamp: Date.now()
-                            };
-                            return stats;
-                        }).catch(() => ({ fps: 0, cpu: 0 }));
-                    }
-
-                    const [liveInfo, stats] = await Promise.all([liveInfoPromise, statsPromise]);
-                    
-                    if (liveInfo.online) {
-                        status.name = liveInfo.name;
-                        status.map = liveInfo.map;
-                        status.players = liveInfo.players;
-                        status.maxPlayers = liveInfo.maxPlayers;
-                        status.online = true;
-                        status.fps = stats.fps;
-                        status.cpu = stats.cpu;
-                    }
-                }
-
-                const serverData = {
-                    id: c.Id,
-                    name: status.name,
-                    owner: serverRecord.owner_username,
-                    owner_id: serverRecord.owner_id,
-                    ip: process.env.GAME_SERVER_HOST || process.env.HOST_IP || FASTDL_HOST,
-                    state: c.State,
-                    statusText: c.Status,
-                    port,
-                    map: status.map,
-                    players: status.players,
-                    maxPlayers: status.maxPlayers,
-                    online: status.online,
-                    fps: status.fps,
-                    cpu: status.cpu,
-                    plan_type: serverRecord.plan_type,
-                    expires_at: serverRecord.expires_at,
-                    sql: serverRecord.db_name ? {
-                        database: serverRecord.db_name,
-                        username: serverRecord.db_username,
-                        host: MYSQL_PUBLIC_HOST,
-                        port: MYSQL_PUBLIC_PORT
-                    } : null,
-                    php: serverRecord.php_path ? {
-                        path: serverRecord.php_path,
-                        url: serverRecord.php_url || publicPhpUrl(port)
-                    } : null,
-                    fastdl: {
-                        path: serverRecord.fastdl_path || String(port),
-                        url: serverRecord.sv_downloadurl || publicFastdlUrl(port)
-                    }
-                };
-
-                // Store in memory cache
-                serverStatusCache[c.Id] = {
-                    data: serverData,
-                    state: c.State,
-                    timestamp: Date.now()
-                };
-
-                return serverData;
-            } catch (err) {
-                console.error(`Error loading cs16 container ${c.Id.slice(0, 12)}:`, err.message);
-                return null;
             }
-        }));
+        }
 
-        const activeServers = servers.filter(s => s !== null);
-        activeServers.sort((a, b) => a.port - b.port);
-        res.json(activeServers);
+        const list = await Promise.all(records.map(record =>
+            serializeServer(req, record, containersById.get(record.container_id), plansBySlug)
+                .catch(err => { console.error(`Server ${record.port}:`, err.message); return null; })
+        ));
+        res.json(list.filter(Boolean).sort((a, b) => a.port - b.port));
     } catch (e) {
         routeError(res, e);
     }
 });
 
-// POST /api/servers/create - Create a new CS 1.6 server
-router.post('/create', async (req, res) => {
+// GET /api/servers/available — rentable pool slots
+router.get('/available', async (req, res) => {
     try {
-        const plan = req.body.plan || 'standard';
-        const requestPort = parseInt(req.body.port, 10);
-        if (requestPort && isProtectedPort(requestPort)) {
-            return res.status(409).json({ error: `Port ${requestPort} is protected and unavailable for rental.` });
-        }
-        if (!['standard', 'pro'].includes(plan)) {
-            return res.status(400).json({ error: 'Lütfen geçerli bir paket seçiniz (standard veya pro).' });
-        }
+        const pool = await req.panelDb.listUnrentedPoolServers();
+        res.json({ servers: pool.map(s => ({ port: s.port, address: `${cfg.gameServerHost}:${s.port}` })) });
+    } catch (e) {
+        routeError(res, e);
+    }
+});
 
-        const requestedRconPassword = String(req.body.rconPassword || '').trim();
-        if (!/^\S{8,64}$/.test(requestedRconPassword)) {
-            return res.status(400).json({ error: 'RCON password must be 8-64 characters and cannot contain spaces.' });
-        }
+// GET /api/servers/quote?plan=&months=&coupon=
+router.get('/quote', async (req, res) => {
+    try {
+        const plan = await req.panelDb.getPlan(req.query.plan);
+        if (!plan || (!plan.active && !req.query.renew)) return res.status(404).json({ error: 'Paket bulunamadı.' });
+        const q = await billing.quote({ plan, months: req.query.months, couponCode: req.query.coupon, userId: req.user.id });
+        res.json(billing.publicQuote(q));
+    } catch (e) {
+        routeError(res, e);
+    }
+});
 
-        // Get dynamic limits from settings
-        const priceStandard = parseFloat(await req.panelDb.getSetting('price_standard') || '250');
-        const pricePro = parseFloat(await req.panelDb.getSetting('price_pro') || '350');
-        const maxPlayersStandard = parseInt(await req.panelDb.getSetting('max_players_standard') || '24', 10);
-        const maxPlayersPro = parseInt(await req.panelDb.getSetting('max_players_pro') || '32', 10);
-
-        let price = 0;
-        let maxPlayers = 24;
-
-        if (plan === 'standard') {
-            price = priceStandard;
-            maxPlayers = maxPlayersStandard;
-        } else if (plan === 'pro') {
-            price = pricePro;
-            maxPlayers = maxPlayersPro;
-        }
-
-        // Deduct balance first
-        if (price > 0) {
-            try {
-                await req.panelDb.deductUserBalance(req.user.id, price);
-            } catch (balErr) {
-                return res.status(400).json({ error: balErr.message || 'Insufficient balance. Please add funds to rent a server.' });
-            }
-        }
-
-        // Find available server in the 10 always-on pool (specific port if requested, otherwise first available)
-        const protectedPorts = [...PROTECTED_SERVER_PORTS];
-        let queryStr = "SELECT * FROM panel_servers WHERE owner_id = 1";
-        const queryParams = [];
-        if (protectedPorts.length) {
-            queryStr += ` AND port NOT IN (${protectedPorts.map(() => '?').join(',')})`;
-            queryParams.push(...protectedPorts);
-        }
-        if (requestPort) {
-            queryStr += " AND port = ?";
-            queryParams.push(requestPort);
-        }
-        queryStr += " LIMIT 1";
-
-        const [available] = await req.panelDb.assertPool().query(queryStr, queryParams);
-
-        if (!available || !available[0]) {
-            // Refund balance since no server was found
-            if (price > 0) {
-                await req.panelDb.assertPool().query(
-                    "UPDATE panel_users SET balance = balance + ? WHERE id = ?",
-                    [price, req.user.id]
-                );
-            }
-            return res.status(400).json({ error: 'All servers in the pool are currently rented. Please try again later.' });
-        }
-
-        const sRecord = available[0];
-        const port = sRecord.port;
-        assertDestructiveOperationAllowed(port, 'rented or reset');
-        const containerId = sRecord.container_id;
-        const serverName = req.body.name || `CS 1.6 Server ${port}`;
-
-        // Calculate expires_at (30 days from now)
-        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-
-        // Update database record to change ownership and plan details
-        await req.panelDb.assertPool().query(
-            "UPDATE panel_servers SET owner_id = ?, plan_type = ?, name = ?, rcon_password = ?, expires_at = ? WHERE id = ?",
-            [req.user.id, plan, serverName, requestedRconPassword, expiresAt, sRecord.id]
-        );
-
-        // Now run clean reset on this container so user gets a completely fresh startup
-        const container = req.docker.getContainer(containerId);
-        let info = null;
-        try {
-            info = await container.inspect();
-        } catch(e) {
-            // If container is missing, heal pool and raise error
-            await require('../poolService').ensurePool(req.docker);
-            return res.status(500).json({ error: 'Kiralama sırasında bir hata oluştu, lütfen tekrar deneyiniz.' });
-        }
-
-        // Reset server files (similar to POST /:id/reset logic)
-        const volumeName = `cs16-server-${port}-cstrike`;
-        if (info.State.Running) {
-            await container.stop({ t: 5 }).catch(() => {});
-        }
-        await container.remove({ v: true }).catch(() => {});
-        
-        try {
-            const volume = req.docker.getVolume(volumeName);
-            await volume.remove();
-        } catch (volErr) {}
-
-        // Drop old MySQL and recreate for this server
-        try {
-            await req.panelDb.dropSqlAccount(sRecord.db_name, sRecord.db_username);
-        } catch(e) {}
-
-        // Recreate container with new ownership variables
-        const cpuset = (port % 2 === 1) ? '0' : '1';
-        const ExposedPorts = {};
-        ExposedPorts[`${port}/udp`] = {};
-        ExposedPorts[`${port}/tcp`] = {};
-        const PortBindings = {};
-        PortBindings[`${port}/udp`] = [{ HostPort: port.toString() }];
-        PortBindings[`${port}/tcp`] = [{ HostPort: port.toString() }];
-
-        const fastdlPath = process.env.FASTDL_HOST_PATH || '/opt/cspanel/fastdl-data';
-        const phpWwwPath = process.env.PHP_WWW_HOST_PATH || '/opt/cspanel/php-www';
-        const svDownloadUrl = publicFastdlUrl(port);
-
-        const createOpts = {
-            Image: 'cs16-server-base',
-            name: `cs16-server-${port}`,
-            ExposedPorts,
-            Env: [
-                `PORT=${port}`,
-                `SERVER_NAME=${serverName}`,
-                `RCON_PASSWORD=${requestedRconPassword}`,
-                `MAXPLAYERS=${maxPlayers}`,
-                `START_MAP=de_dust2`,
-                `SV_DOWNLOADURL=${svDownloadUrl}`
-            ],
-            HostConfig: {
-                PortBindings,
-                Binds: [
-                    `${volumeName}:/hlds/cstrike`,
-                    `${fastdlPath}/${port}:/fastdl-data`,
-                    `${phpWwwPath}/${port}:/php-www`
-                ],
-                RestartPolicy: { Name: 'always' },
-                CapAdd: ['SYS_NICE'],
-                CpusetCpus: cpuset,
-                Ulimits: [
-                    { Name: 'rtprio', Soft: 99, Hard: 99 }
-                ]
-            }
-        };
-
-        const newContainer = await req.docker.createContainer(createOpts);
-        await newContainer.start();
-        
-        try {
-            const network = req.docker.getNetwork('cs-network');
-            await network.connect({ Container: newContainer.id });
-        } catch (netErr) {}
-
-        // Update container_id in database
-        await req.panelDb.assertPool().query(
-            "UPDATE panel_servers SET container_id = ? WHERE id = ?",
-            [newContainer.id, sRecord.id]
-        );
-
-        // Fetch updated record and provision DB/FastDL
-        let updatedRecord = await req.panelDb.requireServerAccess(req.user, req.docker, newContainer.id);
-        updatedRecord = await req.panelDb.provisionSqlForRecord(updatedRecord);
-        fastdl.ensureCleanFastdlTree(port);
-        ensurePhpArea(updatedRecord);
-
-        const ready = await waitForContainerReady(newContainer);
-        if (ready) {
-            await ensureSvDownloadUrl(newContainer, port);
-            await ensureSqlCfg(newContainer, updatedRecord);
-            try {
-                await syncFastdlWithRetry(newContainer, port);
-            } catch (syncErr) {}
-        }
-
+// POST /api/servers/create — rent a pool server (paywall checkout)
+router.post('/create', security.rateLimit({ name: 'rent', windowMs: 60000, max: 5, keys: req => [String(req.user.id)] }), async (req, res) => {
+    try {
+        if (req.user.suspended) return res.status(403).json({ error: 'Hesabınız askıda.' });
+        const { record, quote } = await billing.rentServer(req.docker, req.user, req.body || {}, { ip: security.clientIp(req) });
         res.json({
             success: true,
-            message: `Sunucu başarıyla kiralandı! Port: ${port}`,
-            containerId: newContainer.id,
-            port
+            message: `Sunucu kiralandı! Port: ${record.port}. Kurulum 30-60 saniye sürer.`,
+            containerId: record.container_id,
+            port: record.port,
+            quote
         });
     } catch (e) {
         routeError(res, e);
     }
 });
 
-// POST /api/servers/:id/renew - Extend server duration by 30 days (User)
+// POST /api/servers/:id/renew — extend (or upgrade) a subscription
 router.post('/:id/renew', async (req, res) => {
     try {
-        const server = await req.panelDb.getServerByContainerId(req.params.id);
-        if (!server) {
-            return res.status(404).json({ error: 'Server not found' });
-        }
-
-        if (server.plan_type === 'free') {
-            return res.status(400).json({ error: 'Ücretsiz paketler uzatılamaz.' });
-        }
-
-        const priceStandard = parseFloat(await req.panelDb.getSetting('price_standard') || '250');
-        const pricePro = parseFloat(await req.panelDb.getSetting('price_pro') || '350');
-
-        let price = priceStandard;
-        if (server.plan_type === 'pro') {
-            price = pricePro;
-        }
-
-        // Deduct price from balance
-        try {
-            await req.panelDb.deductUserBalance(req.user.id, price);
-        } catch (balErr) {
-            return res.status(400).json({ error: balErr.message || 'Yetersiz bakiye. Süre uzatabilmek için lütfen bakiye yükleyiniz.' });
-        }
-
-        // Add 30 days
-        const newExpiry = await req.panelDb.renewServerDuration(server.id, 30);
-
+        await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id, { allowSuspended: true });
+        const body = req.body || {};
+        const result = await billing.renewServer(req.docker, req.user, req.params.id, {
+            months: body.months || 1, couponCode: body.coupon || null, planSlug: body.plan || null, ip: security.clientIp(req)
+        });
+        invalidateLive(req.params.id);
         res.json({
             success: true,
-            message: 'Server duration extended by 30 days successfully.',
-            expires_at: newExpiry
+            message: 'Sunucu süresi uzatıldı.',
+            expires_at: result.expires_at,
+            containerId: result.record.container_id,
+            quote: result.quote
         });
     } catch (e) {
         routeError(res, e);
     }
 });
 
-// POST /api/servers/:id/start - Start server
-router.post('/:id/start', async (req, res) => {
+router.post('/:id/auto-renew', async (req, res) => {
     try {
-        const serverRecord = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
-        const container = req.docker.getContainer(req.params.id);
-        await container.start();
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id, { allowSuspended: true });
+        const enabled = !!(req.body && (req.body.enabled === true || req.body.enabled === 'true'));
+        const plan = await req.panelDb.getPlan(record.plan_type);
+        if (enabled && plan && plan.is_trial) return res.status(400).json({ error: 'Deneme paketinde otomatik yenileme kullanılamaz.' });
+        await req.panelDb.updateServerContainer(record.container_id, { auto_renew: enabled ? 1 : 0 });
+        res.json({ success: true, auto_renew: enabled });
+    } catch (e) {
+        routeError(res, e);
+    }
+});
 
-        // Background sync FastDL on boot
-        const port = serverRecord.port;
-        if (port) {
-            waitForContainerReady(container).then(() => {
-                syncFastdlWithRetry(container, port).catch(err => {
-                    console.log(`Auto FastDL sync on start failed for port ${port}:`, err.message);
-                });
-            }).catch(() => {});
+async function powerAction(req, res, action) {
+    try {
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        const container = req.docker.getContainer(req.params.id);
+        try {
+            if (action === 'start') await container.start();
+            else if (action === 'stop') await container.stop({ t: 10 });
+            else await container.restart({ t: 10 });
+        } catch (e) {
+            // 304 = already in the requested state; that's success for the user.
+            if (e.statusCode !== 304) throw e;
         }
-
-        res.json({ success: true, message: 'Server started' });
-    } catch (e) {
-        routeError(res, e);
-    }
-});
-
-// POST /api/servers/:id/stop - Stop server
-router.post('/:id/stop', async (req, res) => {
-    try {
-        await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
-        const container = req.docker.getContainer(req.params.id);
-        await container.stop();
-        res.json({ success: true, message: 'Server stopped' });
-    } catch (e) {
-        routeError(res, e);
-    }
-});
-
-// POST /api/servers/:id/restart - Restart server
-router.post('/:id/restart', async (req, res) => {
-    try {
-        const serverRecord = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
-        const container = req.docker.getContainer(req.params.id);
-        await container.restart();
-
-        // Background sync FastDL on reboot
-        const port = serverRecord.port;
-        if (port) {
-            waitForContainerReady(container).then(() => {
-                syncFastdlWithRetry(container, port).catch(err => {
-                    console.log(`Auto FastDL sync on restart failed for port ${port}:`, err.message);
-                });
-            }).catch(() => {});
+        invalidateLive(req.params.id);
+        if (action !== 'stop') {
+            gameContainer.finishProvisioningInBackground(container, record);
         }
-
-        res.json({ success: true, message: 'Server restarted' });
+        await audit(req, `server.${action}`, record.port);
+        const labels = { start: 'başlatıldı', stop: 'durduruldu', restart: 'yeniden başlatıldı' };
+        res.json({ success: true, message: `Sunucu ${labels[action]}.` });
     } catch (e) {
         routeError(res, e);
     }
-});
+}
 
-// DELETE /api/servers/:id - Delete server (Admin Only)
+router.post('/:id/start', (req, res) => powerAction(req, res, 'start'));
+router.post('/:id/stop', (req, res) => powerAction(req, res, 'stop'));
+router.post('/:id/restart', (req, res) => powerAction(req, res, 'restart'));
+
+// DELETE /api/servers/:id — admin only, removes the server and its resources
 router.delete('/:id', async (req, res) => {
     try {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({ error: 'Yalnızca yöneticiler sunucu silebilir.' });
-        }
-        const serverRecord = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
-        const container = req.docker.getContainer(req.params.id);
-        const info = await container.inspect();
-        let port = null;
-        const portBindings = info.HostConfig.PortBindings;
-        for (const key in portBindings) {
-            if (key.endsWith('/udp')) {
-                port = portBindings[key][0].HostPort;
-                break;
-            }
-        }
-        assertDestructiveOperationAllowed(port, 'deleted');
-
-        // Stop container if running and wait until fully stopped
-        if (info.State.Running) {
-            await container.stop();
-            try { await container.wait(); } catch (waitErr) { /* already stopped or removed */ }
-        }
-
-        // Remove container
-        await container.remove();
-
-        // Remove Docker named volume (with retries to handle locks)
-        if (port) {
-            const volumeName = `cs16-server-${port}-cstrike`;
-            const volume = req.docker.getVolume(volumeName);
-            // Async background removal with retries
-            (async () => {
-                for (let i = 0; i < 6; i++) {
-                    try {
-                        await volume.remove();
-                        break;
-                    } catch (err) {
-                        if (i === 5) {
-                            console.log(`Failed to remove volume ${volumeName}:`, err.message);
-                        } else {
-                            await new Promise(r => setTimeout(r, 500));
-                        }
-                    }
-                }
-            })().catch(e => console.log('Volume deletion error:', e.message));
-        }
-
-        const cleanupErrors = [];
-        try { if (port) fastdl.removeFastdlTree(port); } catch (err) { cleanupErrors.push(`FastDL: ${err.message}`); }
-        try { await req.panelDb.dropSqlAccount(serverRecord.db_name, serverRecord.db_username); } catch (err) { cleanupErrors.push(`MySQL: ${err.message}`); }
-        try { removePhpArea(serverRecord); } catch (err) { cleanupErrors.push(`PHP: ${err.message}`); }
-        try { await req.panelDb.deleteServerRecord(req.params.id); } catch (err) { cleanupErrors.push(`Metadata: ${err.message}`); }
-
+        if (req.user.role !== 'admin') return res.status(403).json({ error: 'Yalnızca yöneticiler sunucu silebilir.' });
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        assertDestructiveOperationAllowed(record.port, 'deleted');
+        const errors = await require('../lifecycleService').destroyServerResources(req.docker, record);
+        await audit(req, 'server.delete', record.port);
         res.json({
             success: true,
-            message: cleanupErrors.length ? 'Server deleted, but some cleanup steps failed.' : 'Server deleted successfully',
-            cleanupErrors
+            message: errors.length ? 'Sunucu silindi, ancak bazı temizlik adımları başarısız oldu.' : 'Sunucu silindi.',
+            cleanupErrors: errors
         });
     } catch (e) {
         routeError(res, e);
     }
 });
 
-// POST /api/servers/:id/reset - Wipe cstrike volume and reinstall from clean image
+// POST /api/servers/:id/reset — wipe game files and reinstall from the clean image
 router.post('/:id/reset', async (req, res) => {
     try {
-        const originalRecord = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
         const container = req.docker.getContainer(req.params.id);
         const info = await container.inspect();
-
-        // Get port binding so we can find the volume name
-        let port = null;
-        const portBindings = info.HostConfig.PortBindings;
-        for (const key in portBindings) {
-            if (key.endsWith('/udp')) {
-                port = portBindings[key][0].HostPort;
-                break;
-            }
-        }
-
-        if (!port) {
-            return res.status(400).json({ error: 'Could not determine server port from container bindings.' });
-        }
+        const port = gameContainer.gamePortFromInspect(info) || record.port;
+        if (!port) return res.status(400).json({ error: 'Sunucu portu belirlenemedi.' });
         assertDestructiveOperationAllowed(port, 'reset');
 
-        const volumeName = `cs16-server-${port}-cstrike`;
+        const plan = await req.panelDb.getPlan(record.plan_type);
+        const maxPlayers = parseInt(req.panelDb.getEnvValue(info.Config.Env, 'MAXPLAYERS', (plan && plan.max_players) || 24), 10);
+        const startMap = req.panelDb.getEnvValue(info.Config.Env, 'START_MAP', 'de_dust2');
 
-        // 1. Stop container if running and wait until fully stopped
-        if (info.State.Running) {
-            await container.stop({ t: 10 });
-            try { await container.wait(); } catch (waitErr) { /* already stopped or removed */ }
-        }
-
-        // 2. Remove the container and its cstrike volume so we get a clean start
-        try {
-            await container.remove({ v: true });
-        } catch (removeErr) {
-            console.log('Container remove warning:', removeErr.message);
-        }
-        try {
-            const volume = req.docker.getVolume(volumeName);
-            await volume.remove();
-        } catch (volErr) {
-            console.log('Volume remove warning:', volErr.message);
-        }
-
-        // 3. Recreate container with the same configuration and dynamic CPU core affinity
-        const cpuset = (originalRecord.port % 2 === 1) ? '0' : '1';
-        const createOpts = {
-            Image: info.Config.Image,
-            name: info.Name.replace(/^\//, ''),
-            Env: info.Config.Env,
-            ExposedPorts: info.Config.ExposedPorts || {},
-            HostConfig: {
-                PortBindings: info.HostConfig.PortBindings || {},
-                Binds: info.HostConfig.Binds || [`${volumeName}:/hlds/cstrike`],
-                RestartPolicy: info.HostConfig.RestartPolicy || { Name: 'always' },
-                CapAdd: info.HostConfig.CapAdd || ['SYS_NICE'],
-                CpusetCpus: cpuset,
-                Ulimits: [
-                    { Name: 'rtprio', Soft: 99, Hard: 99 }
-                ]
-            }
-        };
-        const newContainer = await req.docker.createContainer(createOpts);
-        await newContainer.start();
-
-        // Connect new CS container to cs-network so it can reach mysql/fastdl
-        try {
-            const network = req.docker.getNetwork('cs-network');
-            await network.connect({ Container: newContainer.id });
-        } catch (netErr) {
-            console.log('cs-network connect skipped:', netErr.message);
-        }
-
-        // Update the panel record to point to the new container
-        await req.panelDb.updateServerContainer(req.params.id, { container_id: newContainer.id });
-
-        // Ensure PHP area exists for the reset server
-        const newServerRecord = await req.panelDb.getServerByContainerId(newContainer.id);
-        ensurePhpArea(newServerRecord);
-
-        // 4. Ensure sv_downloadurl and sync FastDL
-        let fastdlSync = null;
-        const ready = await waitForContainerReady(newContainer);
-        if (ready) {
-            await ensureSvDownloadUrl(newContainer, port);
-            await ensureSqlCfg(newContainer, newServerRecord);
-            try {
-                fastdl.ensureCleanFastdlTree(port);
-                fastdlSync = await syncFastdlWithRetry(newContainer, port);
-            } catch (syncErr) {
-                console.log('FastDL reset sync warning:', syncErr.message);
-            }
-        } else {
-            console.log('FastDL reset sync skipped: container did not become ready in time');
-        }
-
+        await gameContainer.removeContainerQuietly(req.docker, record.container_id);
+        await gameContainer.removeVolumeWithRetry(req.docker, port);
+        fastdl.ensureCleanFastdlTree(port);
+        const fresh = await gameContainer.createGameContainer(req.docker, {
+            port, name: record.name, rconPassword: record.rcon_password, maxPlayers, startMap, sql: record
+        });
+        const updated = await req.panelDb.updateServerContainer(record.container_id, { container_id: fresh.id });
+        gameContainer.finishProvisioningInBackground(fresh, updated);
+        await audit(req, 'server.reset', port);
         res.json({
             success: true,
-            message: `Server on port ${port} has been reset. A clean installation is now starting.`,
-            containerId: newContainer.id,
-            fastdl: fastdlSync ? {
-                copied: fastdlSync.totalCopied,
-                errors: fastdlSync.totalErrors
-            } : null
+            message: `Port ${port} sıfırlandı. Temiz kurulum başlıyor (30-60 sn).`,
+            containerId: fresh.id
         });
     } catch (e) {
         routeError(res, e);
     }
 });
 
-// Helper function to extract config values from server.cfg content
+// ---------------------------------------------------------------------------
+//  server.cfg settings
+// ---------------------------------------------------------------------------
+
+const CVAR_FIELDS = {
+    // field          cvar               validator
+    name:               ['hostname', 'text'],
+    rconPassword:       ['rcon_password', 'secret'],
+    sv_password:        ['sv_password', 'text'],
+    fpsLimit:           ['sys_ticrate', 'number'],
+    mp_timelimit:       ['mp_timelimit', 'number'],
+    mp_roundtime:       ['mp_roundtime', 'number'],
+    mp_freezetime:      ['mp_freezetime', 'number'],
+    mp_friendlyfire:    ['mp_friendlyfire', 'bool'],
+    mp_c4timer:         ['mp_c4timer', 'number'],
+    sv_maxspeed:        ['sv_maxspeed', 'number'],
+    sv_gravity:         ['sv_gravity', 'number'],
+    pausable:           ['pausable', 'bool'],
+    sv_cheats:          ['sv_cheats', 'bool'],
+    mp_autoteambalance: ['mp_autoteambalance', 'bool'],
+    mp_limitteams:      ['mp_limitteams', 'number'],
+    mp_startmoney:      ['mp_startmoney', 'number'],
+    mp_buytime:         ['mp_buytime', 'number'],
+    mp_forcechasecam:   ['mp_forcechasecam', 'number'],
+    mp_footsteps:       ['mp_footsteps', 'bool'],
+    mp_flashlight:      ['mp_flashlight', 'bool'],
+    decalfrequency:     ['decalfrequency', 'number'],
+    sv_voiceenable:     ['sv_voiceenable', 'bool'],
+    sv_alltalk:         ['sv_alltalk', 'bool']
+};
+
+const CVAR_DEFAULTS = {
+    hostname: 'CS 1.6 Server', rcon_password: '', sv_password: '', sys_ticrate: '1000', mp_timelimit: '20',
+    mp_roundtime: '2.5', mp_freezetime: '1', mp_friendlyfire: '0', mp_c4timer: '35', sv_maxspeed: '320',
+    sv_gravity: '800', pausable: '0', sv_cheats: '0', mp_autoteambalance: '1', mp_limitteams: '2',
+    mp_startmoney: '800', mp_buytime: '1.5', mp_forcechasecam: '0', mp_footsteps: '1', mp_flashlight: '0',
+    decalfrequency: '60', sv_voiceenable: '1', sv_alltalk: '0'
+};
+
+function cfgError(message) {
+    const e = new Error(message);
+    e.statusCode = 400;
+    return e;
+}
+
+function validateCvarValue(field, cvar, kind, raw) {
+    const value = String(raw).trim();
+    if (/[\r\n;"]/.test(value)) throw cfgError(`${cvar} değeri ; " veya satır sonu içeremez.`);
+    if (kind === 'number' && !/^-?\d+(\.\d+)?$/.test(value)) throw cfgError(`${cvar} sayısal olmalı.`);
+    if (kind === 'bool' && !/^[01]$/.test(value)) throw cfgError(`${cvar} 0 veya 1 olmalı.`);
+    if (kind === 'secret' && !/^[A-Za-z0-9!@#$%^&*()_+\-=.,:?]{8,64}$/.test(value)) {
+        throw cfgError('RCON şifresi 8-64 karakter olmalı; boşluk ve tırnak içeremez.');
+    }
+    if (kind === 'text' && value.length > 64) throw cfgError(`${cvar} en fazla 64 karakter olabilir.`);
+    return value;
+}
+
 function extractCfgValue(content, key, defaultValue = '') {
     const regex = new RegExp(`^[ \\t]*${key}[ \\t]+"?([^"\\r\\n]*)"?`, 'm');
     const match = content.match(regex);
     return match ? match[1].trim() : defaultValue;
 }
 
-// Helper function to update or append values to server.cfg
-function updateOrAppendCfg(content, key, value) {
-    const regex = new RegExp(`^[ \\t]*${key}[ \\t]+.*`, 'm');
-    const valueText = String(value);
-    if (/[\r\n;]/.test(valueText)) {
-        const error = new Error(`Invalid value for ${key}`);
-        error.statusCode = 400;
-        throw error;
-    }
-    const quotedValue = (typeof value === 'string' && isNaN(value))
-        ? `"${valueText.replace(/["\\]/g, '')}"`
-        : value;
-    const newLine = `${key} ${quotedValue}`;
-    if (regex.test(content)) {
-        return content.replace(regex, newLine);
-    } else {
-        return content.trim() + `\n${newLine}\n`;
-    }
+function updateOrAppendCfg(content, key, value, kind) {
+    const regex = new RegExp(`^[ \\t]*${key}[ \\t]+.*$`, 'm');
+    const line = (kind === 'number' || kind === 'bool') ? `${key} ${value}` : `${key} "${value}"`;
+    return regex.test(content) ? content.replace(regex, line) : `${content.replace(/\s*$/, '')}\n${line}\n`;
 }
 
-// GET /api/servers/:id/settings - Read and parse server.cfg
 router.get('/:id/settings', async (req, res) => {
     try {
         await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
         const container = req.docker.getContainer(req.params.id);
-        
         const content = await containerFs.readFile(container, 'server.cfg');
-
         let startupMap = 'de_dust2';
         try {
             if (await containerFs.fileExists(container, 'startup_map.txt')) {
-                const mapFileContent = await containerFs.readFile(container, 'startup_map.txt');
-                if (mapFileContent && mapFileContent.trim()) {
-                    startupMap = mapFileContent.trim();
-                }
+                startupMap = (await containerFs.readFile(container, 'startup_map.txt')).trim() || startupMap;
             } else {
                 const inspect = await container.inspect();
-                const env = inspect.Config.Env;
-                const mapEnv = env.find(e => e.startsWith('START_MAP='));
-                if (mapEnv) startupMap = mapEnv.split('=')[1];
+                startupMap = req.panelDb.getEnvValue(inspect.Config.Env, 'START_MAP', startupMap);
             }
-        } catch (e) {
-            console.log('Error reading startupMap:', e.message);
+        } catch (_) { /* default map */ }
+        const settings = { startupMap };
+        for (const [field, [cvar]] of Object.entries(CVAR_FIELDS)) {
+            settings[field] = extractCfgValue(content, cvar, CVAR_DEFAULTS[cvar]);
         }
-
-        const settings = {
-            name: extractCfgValue(content, 'hostname', 'CS 1.6 Server'),
-            rconPassword: extractCfgValue(content, 'rcon_password', ''),
-            fpsLimit: extractCfgValue(content, 'sys_ticrate', '1000'),
-            sv_password: extractCfgValue(content, 'sv_password', ''),
-            mp_timelimit: extractCfgValue(content, 'mp_timelimit', '20'),
-            mp_roundtime: extractCfgValue(content, 'mp_roundtime', '2.5'),
-            mp_freezetime: extractCfgValue(content, 'mp_freezetime', '1'),
-            mp_friendlyfire: extractCfgValue(content, 'mp_friendlyfire', '0'),
-            mp_c4timer: extractCfgValue(content, 'mp_c4timer', '35'),
-            sv_maxspeed: extractCfgValue(content, 'sv_maxspeed', '320'),
-            sv_gravity: extractCfgValue(content, 'sv_gravity', '800'),
-            pausable: extractCfgValue(content, 'pausable', '0'),
-            sv_cheats: extractCfgValue(content, 'sv_cheats', '0'),
-            mp_autoteambalance: extractCfgValue(content, 'mp_autoteambalance', '1'),
-            mp_limitteams: extractCfgValue(content, 'mp_limitteams', '2'),
-            mp_startmoney: extractCfgValue(content, 'mp_startmoney', '800'),
-            mp_buytime: extractCfgValue(content, 'mp_buytime', '1.5'),
-            mp_forcechasecam: extractCfgValue(content, 'mp_forcechasecam', '0'),
-            mp_footsteps: extractCfgValue(content, 'mp_footsteps', '1'),
-            mp_flashlight: extractCfgValue(content, 'mp_flashlight', '0'),
-            decalfrequency: extractCfgValue(content, 'decalfrequency', '60'),
-            sv_voiceenable: extractCfgValue(content, 'sv_voiceenable', '1'),
-            sv_alltalk: extractCfgValue(content, 'sv_alltalk', '0'),
-            startupMap: startupMap
-        };
-
         res.json({ success: true, settings });
     } catch (e) {
         routeError(res, e);
     }
 });
 
-// POST /api/servers/:id/settings - Save server settings
 router.post('/:id/settings', async (req, res) => {
     try {
-        await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
         const container = req.docker.getContainer(req.params.id);
         const info = await container.inspect();
-        if (req.body.map && !/^[A-Za-z0-9_-]+$/.test(req.body.map)) {
-            return res.status(400).json({ error: 'Invalid map name' });
-        }
-        if (req.body.startupMap && !/^[A-Za-z0-9_-]+$/.test(req.body.startupMap)) {
-            return res.status(400).json({ error: 'Invalid startup map name' });
-        }
-        
-        let port = null;
-        const portBindings = info.HostConfig.PortBindings;
-        for (const key in portBindings) {
-            if (key.endsWith('/udp')) {
-                port = portBindings[key][0].HostPort;
-                break;
-            }
-        }
+        const body = req.body || {};
+        if (body.map && !/^[A-Za-z0-9_.-]{1,64}$/.test(body.map)) return res.status(400).json({ error: 'Geçersiz harita adı' });
+        if (body.startupMap && !/^[A-Za-z0-9_.-]{1,64}$/.test(String(body.startupMap).trim())) return res.status(400).json({ error: 'Geçersiz başlangıç haritası' });
 
-        if (!port) {
-            return res.status(400).json({ error: 'Port mapping not found' });
-        }
-
-        const oldRcon = serverRecord.rcon_password || 'rcon123';
-
+        const port = gameContainer.gamePortFromInspect(info) || record.port;
         const ip = queryHelper.getServerIp(info);
+        const running = info.State.Running;
+        const currentRcon = record.rcon_password || '';
 
-        let content = await containerFs.readFile(container, 'server.cfg');
+        const updates = [];
+        for (const [field, [cvar, kind]] of Object.entries(CVAR_FIELDS)) {
+            if (body[field] === undefined || body[field] === null) continue;
+            if (field === 'rconPassword' && String(body[field]).trim() === '') continue;
+            updates.push([cvar, kind, validateCvarValue(field, cvar, kind, body[field])]);
+        }
 
-        {
-            // Update settings list
-            const configUpdates = {
-                'hostname': req.body.name,
-                'rcon_password': req.body.rconPassword,
-                'sys_ticrate': req.body.fpsLimit,
-                'fps_max': req.body.fpsLimit,
-                'sv_password': req.body.sv_password,
-                'mp_timelimit': req.body.mp_timelimit,
-                'mp_roundtime': req.body.mp_roundtime,
-                'mp_freezetime': req.body.mp_freezetime,
-                'mp_friendlyfire': req.body.mp_friendlyfire,
-                'mp_c4timer': req.body.mp_c4timer,
-                'sv_maxspeed': req.body.sv_maxspeed,
-                'sv_gravity': req.body.sv_gravity,
-                'pausable': req.body.pausable,
-                'sv_cheats': req.body.sv_cheats,
-                'mp_autoteambalance': req.body.mp_autoteambalance,
-                'mp_limitteams': req.body.mp_limitteams,
-                'mp_startmoney': req.body.mp_startmoney,
-                'mp_buytime': req.body.mp_buytime,
-                'mp_forcechasecam': req.body.mp_forcechasecam,
-                'mp_footsteps': req.body.mp_footsteps,
-                'mp_flashlight': req.body.mp_flashlight,
-                'decalfrequency': req.body.decalfrequency,
-                'sv_voiceenable': req.body.sv_voiceenable,
-                'sv_alltalk': req.body.sv_alltalk
-            };
+        if (updates.length) {
+            let content = await containerFs.readFile(container, 'server.cfg');
+            for (const [cvar, kind, value] of updates) content = updateOrAppendCfg(content, cvar, value, kind);
+            if (updates.some(([cvar]) => cvar === 'sys_ticrate')) {
+                const fps = updates.find(([cvar]) => cvar === 'sys_ticrate')[2];
+                content = updateOrAppendCfg(content, 'fps_max', fps, 'number');
+            }
+            await containerFs.writeFile(container, 'server.cfg', content);
 
-            for (const [key, value] of Object.entries(configUpdates)) {
-                if (value !== undefined) {
-                    content = updateOrAppendCfg(content, key, value);
-                    if (info.State.Running) {
-                        try {
-                            const rconValue = (typeof value === 'string' && isNaN(value)) ? `"${value}"` : value;
-                            await queryHelper.sendRconCommand(ip, port, oldRcon, `${key} ${rconValue}`);
-                        } catch (rconErr) {
-                            console.log(`Failed to apply RCON change for ${key}:`, rconErr.message);
-                        }
-                    }
+            if (running) {
+                // Apply live in a few batched RCON packets instead of one round-trip per cvar.
+                const commands = updates.map(([cvar, kind, value]) => (kind === 'number' || kind === 'bool') ? `${cvar} ${value}` : `${cvar} "${value}"`);
+                for (let i = 0; i < commands.length; i += 8) {
+                    await queryHelper.sendRconCommand(ip, port, currentRcon, commands.slice(i, i + 8).join('; ')).catch(() => {});
                 }
             }
-
-            await containerFs.writeFile(container, 'server.cfg', content);
         }
 
-        if (req.body.map && info.State.Running) {
-            await queryHelper.sendRconCommand(ip, port, req.body.rconPassword || oldRcon, `changelevel ${req.body.map}`);
+        const recordUpdates = {};
+        if (body.name !== undefined && String(body.name).trim()) recordUpdates.name = gameContainer.sanitizeServerName(body.name, record.name);
+        const newRcon = updates.find(([cvar]) => cvar === 'rcon_password');
+        if (newRcon) recordUpdates.rcon_password = newRcon[2];
+        if (Object.keys(recordUpdates).length) {
+            const updated = await req.panelDb.updateServerContainer(record.container_id, recordUpdates);
+            try { require('../phpSiteService').writeSiteConfig(updated); } catch (_) { /* site not provisioned */ }
         }
 
-        if (req.body.name) {
-            await req.panelDb.updateServerContainer(req.params.id, { name: req.body.name });
+        if (body.startupMap) await containerFs.writeFile(container, 'startup_map.txt', String(body.startupMap).trim());
+        if (body.map && running) {
+            await queryHelper.sendRconCommand(ip, port, newRcon ? newRcon[2] : currentRcon, `changelevel ${body.map}`);
         }
-
-        if (req.body.rconPassword) {
-            await req.panelDb.updateServerContainer(req.params.id, { rcon_password: req.body.rconPassword });
-        }
-
-        if (req.body.startupMap) {
-            await containerFs.writeFile(container, 'startup_map.txt', req.body.startupMap.trim());
-        }
-
-        res.json({ success: true, message: 'Settings saved and applied where possible' });
+        invalidateLive(req.params.id);
+        await audit(req, 'server.settings', port, { fields: updates.map(u => u[0]).filter(c => c !== 'rcon_password') });
+        res.json({ success: true, message: running ? 'Ayarlar kaydedildi ve sunucuya uygulandı.' : 'Ayarlar kaydedildi; sunucu başlatıldığında geçerli olacak.' });
     } catch (e) {
         routeError(res, e);
     }
 });
 
-// GET /api/servers/:id/configs - Get config, ini, and txt files list recursively (max depth 4)
+// GET /api/servers/:id/configs — editable config files (max depth 4)
 router.get('/:id/configs', async (req, res) => {
     try {
         await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
         const container = req.docker.getContainer(req.params.id);
-
         const pythonScript = `
 import os, json
 root = '/hlds/cstrike'
+priorities = ['server.cfg', 'addons/amxmodx/configs/amxx.cfg', 'addons/amxmodx/configs/plugins.ini',
+              'addons/amxmodx/configs/users.ini', 'addons/amxmodx/configs/sql.cfg', 'mapcycle.txt', 'motd.txt']
 items = []
-allowed_exts = ('.cfg', '.ini', '.txt')
-priorities = [
-    'server.cfg',
-    'addons/amxmodx/configs/amxx.cfg',
-    'addons/amxmodx/configs/plugins.ini',
-    'addons/amxmodx/configs/users.ini',
-    'mapcycle.txt',
-    'motd.txt'
-]
-
-if os.path.exists(root):
-    for current, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('logs', 'models', 'sprites', 'sound', 'gfx')]
-        rel_dir = os.path.relpath(current, root)
-        if rel_dir != '.' and len(rel_dir.split(os.sep)) > 4:
-            dirs[:] = []
-            continue
-        for name in files:
-            if name.lower().endswith(allowed_exts):
-                full = os.path.join(current, name)
-                rel = os.path.relpath(full, root).replace(os.sep, "/")
-                items.append(rel)
-
-# Priority sorting helper
-def get_sort_key(path):
-    try:
-        idx = priorities.index(path)
-        return (0, idx, path)
-    except ValueError:
-        return (1, 0, path)
-
-items.sort(key=get_sort_key)
-print(json.dumps(items))
+for current, dirs, files in os.walk(root):
+    dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('logs', 'models', 'sprites', 'sound', 'gfx', 'maps', 'scripting')]
+    rel_dir = os.path.relpath(current, root)
+    if rel_dir != '.' and len(rel_dir.split(os.sep)) > 4:
+        dirs[:] = []
+        continue
+    for name in files:
+        if name.lower().endswith(('.cfg', '.ini', '.txt')):
+            items.append(os.path.relpath(os.path.join(current, name), root).replace(os.sep, '/'))
+items.sort(key=lambda p: (0, priorities.index(p), p) if p in priorities else (1, 0, p))
+print(json.dumps(items[:500]))
 `;
-
         const result = await containerFs.runExec(container, { Cmd: ['python3', '-c', pythonScript] });
-        const configs = JSON.parse(result.output.trim() || '[]');
-        res.json({ success: true, configs });
+        res.json({ success: true, configs: JSON.parse(result.output.trim() || '[]') });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        routeError(res, e);
     }
 });
 
-function parseDockerLogs(buffer) {
-    let result = '';
-    let offset = 0;
-    while (offset < buffer.length) {
-        if (offset + 8 > buffer.length) break;
-        const type = buffer.readUInt8(offset);
-        const size = buffer.readUInt32BE(offset + 4);
-        offset += 8;
-        if (offset + size > buffer.length) {
-            result += buffer.toString('utf8', offset);
-            break;
-        }
-        result += buffer.toString('utf8', offset, offset + size);
-        offset += size;
-    }
-    return result;
-}
-
-// GET /api/servers/:id/logs - Get console and crash logs (stdout/stderr)
+// GET /api/servers/:id/logs — container stdout/stderr tail
 router.get('/:id/logs', async (req, res) => {
     try {
         await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
-        const container = req.docker.getContainer(req.params.id);
-
-        const logsBuffer = await container.logs({
-            stdout: true,
-            stderr: true,
-            tail: 500,
-            follow: false
-        });
-
-        const logs = parseDockerLogs(logsBuffer);
-        res.json({ success: true, logs });
+        const tail = Math.min(Math.max(parseInt(req.query.tail, 10) || 500, 50), 5000);
+        const buffer = await req.docker.getContainer(req.params.id).logs({ stdout: true, stderr: true, tail, follow: false });
+        res.json({ success: true, logs: containerFs.decodeDockerOutput(Buffer.isBuffer(buffer) ? buffer : Buffer.from(String(buffer))) });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        routeError(res, e);
     }
 });
 
-// Helper to read absolute files from game container using docker exec
-async function readContainerFileAbsolute(container, absolutePath) {
-    try {
-        const exec = await container.exec({
-            Cmd: ['sh', '-c', `if [ -f "${absolutePath}" ]; then cat "${absolutePath}"; fi`],
-            AttachStdout: true,
-            AttachStderr: true
-        });
-        const stream = await exec.start({});
-        
-        return new Promise((resolve) => {
-            const chunks = [];
-            stream.on('data', chunk => chunks.push(chunk));
-            stream.on('end', () => {
-                const buffer = Buffer.concat(chunks);
-                resolve(parseDockerLogs(buffer));
-            });
-            stream.on('error', () => {
-                resolve('');
-            });
-        });
-    } catch (err) {
-        return '';
-    }
-}
-
-// GET /api/servers/:id/crash-logs - Get contents of sys_error.log, debug.log, and AMXX error logs
+// GET /api/servers/:id/crash-logs — sys_error.log, debug.log, latest AMXX error log
 router.get('/:id/crash-logs', async (req, res) => {
     try {
         await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
         const container = req.docker.getContainer(req.params.id);
-
-        const sysErrorPromise = readContainerFileAbsolute(container, '/hlds/cstrike/sys_error.log');
-        const debugLogPromise = readContainerFileAbsolute(container, '/hlds/debug.log');
-
-        // Fetch latest AMXX error log file path and read it
-        let amxxErrorsPromise = Promise.resolve('');
-        try {
-            const listExec = await container.exec({
-                Cmd: ['sh', '-c', 'ls -1 /hlds/cstrike/addons/amxmodx/logs/error_* 2>/dev/null | sort | tail -n 1'],
-                AttachStdout: true,
-                AttachStderr: true
-            });
-            const listStream = await listExec.start({});
-            const latestFile = await new Promise((resolve) => {
-                const chunks = [];
-                listStream.on('data', chunk => chunks.push(chunk));
-                listStream.on('end', () => {
-                    const filePath = parseDockerLogs(Buffer.concat(chunks)).trim();
-                    resolve(filePath);
-                });
-                listStream.on('error', () => resolve(''));
-            });
-
-            if (latestFile) {
-                amxxErrorsPromise = readContainerFileAbsolute(container, latestFile);
-            }
-        } catch (err) {
-            console.log('Failed to fetch AMXX logs list:', err.message);
-        }
-
-        const [sys_error, debug_log, amxx_errors] = await Promise.all([
-            sysErrorPromise,
-            debugLogPromise,
-            amxxErrorsPromise
-        ]);
-
+        // File names come from the customer's own volume, so pass them as argv
+        // (never through a shell) and cap how much we read.
+        const script = `
+import glob, json, os
+def tail(path, limit=200000):
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - limit))
+            return f.read().decode('utf-8', 'ignore')
+    except Exception:
+        return ''
+errors = sorted(glob.glob('/hlds/cstrike/addons/amxmodx/logs/error_*.log'))
+print(json.dumps({
+    'sys_error': tail('/hlds/cstrike/sys_error.log'),
+    'debug_log': tail('/hlds/debug.log'),
+    'amxx_errors': tail(errors[-1]) if errors else '',
+    'amxx_file': os.path.basename(errors[-1]) if errors else None
+}))
+`;
+        const result = await containerFs.runExec(container, { Cmd: ['python3', '-c', script] }, { timeoutMs: 20000 });
+        const data = JSON.parse(result.output.trim() || '{}');
         res.json({
             success: true,
-            sys_error: sys_error.trim(),
-            debug_log: debug_log.trim(),
-            amxx_errors: amxx_errors.trim()
+            sys_error: String(data.sys_error || '').trim(),
+            debug_log: String(data.debug_log || '').trim(),
+            amxx_errors: String(data.amxx_errors || '').trim(),
+            amxx_file: data.amxx_file || null
         });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        routeError(res, e);
     }
 });
 
 module.exports = router;
+module.exports._test = { validateCvarValue, updateOrAppendCfg, extractCfgValue };

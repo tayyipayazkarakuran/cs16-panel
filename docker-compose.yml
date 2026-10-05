@@ -23,9 +23,10 @@ services:
       # Docker socket – panel controls other containers
       - /var/run/docker.sock:/var/run/docker.sock
       # Shared volumes so panel can write files directly
-      # Shared volumes so panel can write files directly
       - ${FASTDL_HOST_PATH:-/opt/cspanel/fastdl-data}:/fastdl-data
       - ${PHP_WWW_HOST_PATH:-/opt/cspanel/php-www}:/php-www
+      # Payment receipts survive panel rebuilds
+      - ${UPLOADS_HOST_PATH:-/opt/cspanel/uploads}:/app/uploads
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=3000
@@ -37,19 +38,29 @@ services:
       # FastDL
       - FASTDL_PATH=/fastdl-data
       - FASTDL_HOST_PATH=${FASTDL_HOST_PATH:-/opt/cspanel/fastdl-data}
-      - FASTDL_HOST=${FASTDL_HOST:-127.0.0.1}
+      - FASTDL_HOST=${FASTDL_HOST:-${HOST_IP:-127.0.0.1}}
       - FASTDL_PORT=${FASTDL_PORT:-8080}
+      # Optional: public FastDL base such as http://fastdl.example.com (http only)
+      - FASTDL_PUBLIC_URL=${FASTDL_PUBLIC_URL:-}
+      # Game server address shown to players
+      - GAME_SERVER_HOST=${GAME_SERVER_HOST:-${HOST_IP:-127.0.0.1}}
       # MySQL internal (panel → mysql container)
       - MYSQL_HOST=cs-mysql
       - MYSQL_PORT=3306
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-cs_root_2024}
-      # MySQL public host (shown to clients / game servers for SQL cfg)
-      - MYSQL_PUBLIC_HOST=${MYSQL_PUBLIC_HOST:-${HOST_IP:-127.0.0.1}}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      # Game servers and PHP sites reach MySQL inside cs-network
+      - MYSQL_INTERNAL_HOST=cs-mysql
+      - MYSQL_INTERNAL_PORT=3306
+      # Optional: host/port shown to customers for remote SQL tools.
+      # Leave empty unless MYSQL_BIND_HOST exposes the port publicly.
+      - MYSQL_PUBLIC_HOST=${MYSQL_PUBLIC_HOST:-}
       - MYSQL_PUBLIC_PORT=${MYSQL_PUBLIC_PORT:-3306}
-      # PHP public URL template (use {port} placeholder OR leave as base URL)
+      # PHP sites: base URL (sites at <base>/<port>/) or a template with {port},
+      # e.g. https://php-{port}.example.com with wildcard DNS → cs-php
       - PHP_PUBLIC_BASE_URL=${PHP_PUBLIC_BASE_URL:-http://${HOST_IP:-127.0.0.1}:8081}
-      # Panel authentication (override every value in production .env)
-      - PANEL_AUTH_SECRET=${PANEL_AUTH_SECRET:-cs-panel-dev-secret}
+      # Session signing secret. If unset (or a known default) a random secret
+      # is generated once and stored in the database.
+      - PANEL_AUTH_SECRET=${PANEL_AUTH_SECRET:-}
       - PANEL_TOKEN_TTL_SECONDS=${PANEL_TOKEN_TTL_SECONDS:-86400}
       - PANEL_AUTH_HANDOFF_TTL_SECONDS=${PANEL_AUTH_HANDOFF_TTL_SECONDS:-60}
       - PANEL_ADMIN_USERNAME=${PANEL_ADMIN_USERNAME:-admin}
@@ -90,10 +101,11 @@ services:
     container_name: cs-mysql
     restart: unless-stopped
     ports:
-      # Database traffic is accessible publicly for game servers
-      - "${MYSQL_BIND_HOST:-0.0.0.0}:${MYSQL_HOST_PORT:-3306}:3306"
+      # Game servers and PHP use cs-network, so MySQL is only bound locally by
+      # default. Set MYSQL_BIND_HOST=0.0.0.0 to allow remote SQL clients.
+      - "${MYSQL_BIND_HOST:-127.0.0.1}:${MYSQL_HOST_PORT:-3306}:3306"
     environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-cs_root_2024}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
       - MYSQL_DATABASE=cs_panel
       - MYSQL_ROOT_HOST=%
     volumes:
@@ -101,7 +113,7 @@ services:
     networks:
       - cs-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-cs_root_2024}"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -121,8 +133,6 @@ services:
       - "${PHP_BIND_HOST:-0.0.0.0}:${PHP_HOST_PORT:-8081}:80"
     volumes:
       - ${PHP_WWW_HOST_PATH:-/opt/cspanel/php-www}:/var/www/html
-      - ./php-root-index.php:/var/www/html/index.php:ro
-      - ./php-root-prepend.php:/var/www/html/.prepend.php:ro
     networks:
       - cs-network
 

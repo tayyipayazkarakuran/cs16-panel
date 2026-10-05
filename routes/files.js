@@ -19,11 +19,12 @@ function safeResolve(relative) {
 function safeUploadName(name) {
     const filename = cFs.safeRelativePath(String(name || ''), { allowEmpty: false });
     if (filename.includes('/')) throw new Error('Upload filename must not contain a path');
+    if (filename.startsWith('.cspanel-')) throw new Error('Invalid file name');
     return filename;
 }
 
 function sendError(res, error) {
-    const isBadRequest = /^(Access denied|Invalid|Missing|Upload filename)/.test(error.message);
+    const isBadRequest = /^(Access denied|Invalid|Missing|Upload filename|Container command failed)/.test(error.message);
     res.status(error.statusCode || (isBadRequest ? 400 : 500)).json({ error: error.message });
 }
 
@@ -107,6 +108,7 @@ router.post('/:id/edit', async (req, res) => {
         const relFile = safeResolve(req.body.file);
         if (!relFile) return res.status(400).json({ error: 'Missing file path' });
         const content = req.body.content === undefined ? '' : String(req.body.content);
+        if (Buffer.byteLength(content) > 8 * 1024 * 1024) return res.status(413).json({ error: 'İçerik çok büyük (en fazla 8 MB).' });
         await cFs.writeFile(container, relFile, content);
         res.json({ success: true, message: 'File saved successfully' });
     } catch (error) {
@@ -114,20 +116,66 @@ router.post('/:id/edit', async (req, res) => {
     }
 });
 
-// GET /api/files/:id/download
+// GET /api/files/:id/download — streamed straight from the container
 router.get('/:id/download', async (req, res) => {
     try {
         const container = req.docker.getContainer(req.params.id);
         await requireRunning(container);
         const relFile = safeResolve(req.query.file);
         if (!relFile) return res.status(400).json({ error: 'Missing file path' });
-        const targetFile = cFs.cstrikePath(relFile, { allowEmpty: false });
-        const script = 'import base64, sys; sys.stdout.write(base64.b64encode(open(sys.argv[1], "rb").read()).decode("ascii"))';
-        const result = await cFs.runExec(container, { Cmd: ['python3', '-c', script, targetFile] }, { timeoutMs: 120000 });
-        const buffer = Buffer.from(result.output.trim(), 'base64');
-        res.setHeader('Content-Disposition', `attachment; filename="${path.posix.basename(relFile).replace(/"/g, '')}"`);
+        const file = await cFs.openFileStream(container, relFile);
+        const asciiName = file.name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '');
+        res.setHeader('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(file.name)}`);
         res.setHeader('Content-Type', 'application/octet-stream');
-        res.send(buffer);
+        res.setHeader('Content-Length', String(file.size));
+        file.stream.on('end', file.done);
+        file.stream.pipe(res);
+    } catch (error) {
+        sendError(res, error);
+    }
+});
+
+// POST /api/files/:id/mkdir { path, name }
+router.post('/:id/mkdir', async (req, res) => {
+    try {
+        const container = req.docker.getContainer(req.params.id);
+        await requireRunning(container);
+        const parent = safeResolve(req.body.path || '');
+        const name = safeUploadName(req.body.name);
+        await cFs.makeDir(container, parent ? `${parent}/${name}` : name);
+        res.status(201).json({ success: true, message: `${name} klasörü oluşturuldu.` });
+    } catch (error) {
+        sendError(res, error);
+    }
+});
+
+// POST /api/files/:id/rename { from, to }
+router.post('/:id/rename', async (req, res) => {
+    try {
+        const container = req.docker.getContainer(req.params.id);
+        await requireRunning(container);
+        const from = cFs.safeRelativePath(String(req.body.from || ''), { allowEmpty: false });
+        const to = cFs.safeRelativePath(String(req.body.to || ''), { allowEmpty: false });
+        await cFs.movePath(container, from, to);
+        res.json({ success: true, message: 'Taşındı.' });
+    } catch (error) {
+        sendError(res, error);
+    }
+});
+
+// POST /api/files/:id/extract { file, dest } — unzip an archive already on the server
+router.post('/:id/extract', async (req, res) => {
+    try {
+        const container = req.docker.getContainer(req.params.id);
+        const inspect = await requireRunning(container);
+        const file = cFs.safeRelativePath(String(req.body.file || ''), { allowEmpty: false });
+        if (!/\.zip$/i.test(file)) return res.status(400).json({ error: 'Yalnızca .zip arşivleri açılabilir.' });
+        const dest = safeResolve(req.body.dest !== undefined ? req.body.dest : file.split('/').slice(0, -1).join('/'));
+        const result = await cFs.extractZip(container, file, dest);
+        // New maps/models/sounds become downloadable right away.
+        const port = gamePort(inspect);
+        if (port) fastdlService.syncFastdlFromContainer(container, port).catch(() => {});
+        res.json({ success: true, message: `${result.files || 0} dosya çıkarıldı.`, ...result });
     } catch (error) {
         sendError(res, error);
     }

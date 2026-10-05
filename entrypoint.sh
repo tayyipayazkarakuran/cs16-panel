@@ -25,82 +25,79 @@ if [ -f "/hlds/reunion.cfg" ]; then
     cp /hlds/reunion.cfg /hlds/cstrike/reunion.cfg
 fi
 
-# Ensure default server.cfg exists or update it
-if [ ! -f "/hlds/cstrike/server.cfg" ]; then
+CFG=/hlds/cstrike/server.cfg
+
+# Replace (or append) one cvar line. Matches the cvar name exactly at the start
+# of a line, so e.g. "log" never deletes a hostname that contains "log".
+set_cvar() {
+    name="$1"; value="$2"
+    if [ -f "$CFG" ] && grep -qE "^[[:space:]]*${name}[[:space:]]" "$CFG"; then
+        sed -i -E "s|^[[:space:]]*${name}[[:space:]].*$|${name} ${value}|" "$CFG"
+    else
+        echo "${name} ${value}" >> "$CFG"
+    fi
+}
+
+ensure_cvar() {
+    name="$1"; value="$2"
+    if [ ! -f "$CFG" ] || ! grep -qE "^[[:space:]]*${name}[[:space:]]" "$CFG"; then
+        echo "${name} ${value}" >> "$CFG"
+    fi
+}
+
+if [ ! -f "$CFG" ]; then
     echo "Creating default server.cfg..."
-    cat <<EOT > /hlds/cstrike/server.cfg
-hostname "$SERVER_NAME"
-rcon_password "$RCON_PASSWORD"
-sys_ticrate 1000
-fps_max 1000
-sv_minrate 25000
-sv_maxrate 100000
-sv_minupdaterate 20
-sv_maxupdaterate 102
-sv_unlag 1
-sv_maxunlag 0.5
-sv_unlagsamples 1
-sv_unlagpush 0
-sv_timeout 60
-sv_rehlds_movecmdrate_max_avg 2000
-sv_rehlds_movecmdrate_max_burst 5000
-sv_rehlds_movecmdrate_avg_punish -1
-sv_rehlds_movecmdrate_burst_punish -1
-sv_rehlds_local_gametime 1
-log on
-sv_logbans 1
-sv_logecho 1
-sv_logfile 1
-sv_log_onefile 0
-EOT
-else
-    # Ensure hostname exists in server.cfg without overwriting
-    if ! grep -q "^[[:space:]]*hostname" /hlds/cstrike/server.cfg; then
-        echo "hostname \"$SERVER_NAME\"" >> /hlds/cstrike/server.cfg
-    fi
-    # Ensure rcon_password exists in server.cfg without overwriting
-    if ! grep -q "^[[:space:]]*rcon_password" /hlds/cstrike/server.cfg; then
-        echo "rcon_password \"$RCON_PASSWORD\"" >> /hlds/cstrike/server.cfg
-    fi
-    # Enforce performance and network cvars to prevent duplicates/lag
-    for cvar in sys_ticrate fps_max sv_minrate sv_maxrate sv_minupdaterate sv_maxupdaterate sv_unlag sv_maxunlag sv_unlagsamples sv_unlagpush sv_timeout sv_rehlds_movecmdrate_max_avg sv_rehlds_movecmdrate_max_burst sv_rehlds_movecmdrate_avg_punish sv_rehlds_movecmdrate_burst_punish sv_rehlds_local_gametime; do
-        sed -i "/$cvar/d" /hlds/cstrike/server.cfg
-    done
-    echo "sys_ticrate 1000" >> /hlds/cstrike/server.cfg
-    echo "fps_max 1000" >> /hlds/cstrike/server.cfg
-    echo "sv_minrate 25000" >> /hlds/cstrike/server.cfg
-    echo "sv_maxrate 100000" >> /hlds/cstrike/server.cfg
-    echo "sv_minupdaterate 20" >> /hlds/cstrike/server.cfg
-    echo "sv_maxupdaterate 102" >> /hlds/cstrike/server.cfg
-    echo "sv_unlag 1" >> /hlds/cstrike/server.cfg
-    echo "sv_maxunlag 0.5" >> /hlds/cstrike/server.cfg
-    echo "sv_unlagsamples 1" >> /hlds/cstrike/server.cfg
-    echo "sv_unlagpush 0" >> /hlds/cstrike/server.cfg
-    echo "sv_timeout 60" >> /hlds/cstrike/server.cfg
-    echo "sv_rehlds_movecmdrate_max_avg 2000" >> /hlds/cstrike/server.cfg
-    echo "sv_rehlds_movecmdrate_max_burst 5000" >> /hlds/cstrike/server.cfg
-    echo "sv_rehlds_movecmdrate_avg_punish -1" >> /hlds/cstrike/server.cfg
-    echo "sv_rehlds_movecmdrate_burst_punish -1" >> /hlds/cstrike/server.cfg
-    echo "sv_rehlds_local_gametime 1" >> /hlds/cstrike/server.cfg
+    printf 'hostname "%s"\nrcon_password "%s"\n' "$SERVER_NAME" "$RCON_PASSWORD" > "$CFG"
+fi
 
-    # Enforce logging settings so connection logs fallback can work
-    for cvar in log sv_logbans sv_logecho sv_logfile sv_log_onefile; do
-        sed -i "/$cvar/d" /hlds/cstrike/server.cfg
-    done
-    echo "log on" >> /hlds/cstrike/server.cfg
-    echo "sv_logbans 1" >> /hlds/cstrike/server.cfg
-    echo "sv_logecho 1" >> /hlds/cstrike/server.cfg
-    echo "sv_logfile 1" >> /hlds/cstrike/server.cfg
-    echo "sv_log_onefile 0" >> /hlds/cstrike/server.cfg
+# Values the owner may change in the panel are only added when missing.
+ensure_cvar hostname "\"$SERVER_NAME\""
+ensure_cvar rcon_password "\"$RCON_PASSWORD\""
 
-    # Set sv_downloadurl if provided by panel
-    if [ -n "$SV_DOWNLOADURL" ]; then
-        if ! grep -q "sv_downloadurl" /hlds/cstrike/server.cfg; then
-            echo "sv_downloadurl \"$SV_DOWNLOADURL\"" >> /hlds/cstrike/server.cfg
+# Performance/network tuning is enforced on every boot.
+set_cvar sys_ticrate 1000
+set_cvar fps_max 1000
+set_cvar sv_minrate 25000
+set_cvar sv_maxrate 100000
+set_cvar sv_minupdaterate 20
+set_cvar sv_maxupdaterate 102
+set_cvar sv_unlag 1
+set_cvar sv_maxunlag 0.5
+set_cvar sv_unlagsamples 1
+set_cvar sv_unlagpush 0
+set_cvar sv_timeout 60
+set_cvar sv_rehlds_movecmdrate_max_avg 2000
+set_cvar sv_rehlds_movecmdrate_max_burst 5000
+set_cvar sv_rehlds_movecmdrate_avg_punish -1
+set_cvar sv_rehlds_movecmdrate_burst_punish -1
+set_cvar sv_rehlds_local_gametime 1
+
+# Logging is required for the panel's connection history.
+set_cvar log on
+set_cvar sv_logbans 1
+set_cvar sv_logecho 1
+set_cvar sv_logfile 1
+set_cvar sv_log_onefile 0
+
+# FastDL: always point clients at this server's directory (fresh and old volumes).
+if [ -n "$SV_DOWNLOADURL" ]; then
+    set_cvar sv_downloadurl "\"$SV_DOWNLOADURL\""
+    set_cvar sv_allowdownload 1
+fi
+
+# Per-server MySQL credentials for AMX Mod X (written by the panel).
+if [ -n "$AMX_SQL_DB" ]; then
+    SQL_CFG=/hlds/cstrike/addons/amxmodx/configs/sql.cfg
+    mkdir -p "$(dirname "$SQL_CFG")"
+    touch "$SQL_CFG"
+    for pair in "amx_sql_host:$AMX_SQL_HOST" "amx_sql_user:$AMX_SQL_USER" "amx_sql_pass:$AMX_SQL_PASS" "amx_sql_db:$AMX_SQL_DB" "amx_sql_type:mysql"; do
+        key="${pair%%:*}"; val="${pair#*:}"
+        if grep -qE "^[[:space:]]*${key}[[:space:]]" "$SQL_CFG"; then
+            sed -i -E "s|^[[:space:]]*${key}[[:space:]].*$|${key} \"${val}\"|" "$SQL_CFG"
         else
-            sed -i "s|sv_downloadurl.*|sv_downloadurl \"$SV_DOWNLOADURL\"|g" /hlds/cstrike/server.cfg
+            echo "${key} \"${val}\"" >> "$SQL_CFG"
         fi
-    fi
+    done
 fi
 
 # Ensure mapcycle.txt exists
@@ -131,7 +128,7 @@ fi
 
 # Check if startup_map.txt exists and override START_MAP
 if [ -f "/hlds/cstrike/startup_map.txt" ]; then
-    MAP_FILE_VAL=$(cat /hlds/cstrike/startup_map.txt | tr -d '\r\n ' | head -n 1)
+    MAP_FILE_VAL=$(head -n 1 /hlds/cstrike/startup_map.txt | tr -cd 'A-Za-z0-9_.-')
     if [ -n "$MAP_FILE_VAL" ]; then
         START_MAP="$MAP_FILE_VAL"
     fi
@@ -139,4 +136,4 @@ fi
 
 cd /hlds
 # Run hlds_run with -pingboost 2 and +sys_ticrate 1000 for stable 1000 FPS timing on Linux hosts
-exec ./hlds_run -game cstrike -console -pingboost 2 +port $PORT +maxplayers $MAXPLAYERS +map $START_MAP +sys_ticrate 1000 +fps_max 1000
+exec ./hlds_run -game cstrike -console -pingboost 2 +port "$PORT" +maxplayers "$MAXPLAYERS" +map "$START_MAP" +sys_ticrate 1000 +fps_max 1000

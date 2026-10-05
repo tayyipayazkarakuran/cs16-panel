@@ -18,7 +18,7 @@ async function getServerConnectionDetails(docker, containerId, serverRecord) {
     const info = await container.inspect();
     
     if (!info.State.Running) {
-        throw new Error('Server is offline');
+        throw Object.assign(new Error('Sunucu kapalı.'), { statusCode: 409 });
     }
 
     let port = null;
@@ -34,7 +34,7 @@ async function getServerConnectionDetails(docker, containerId, serverRecord) {
         throw new Error('Server port mapping not found');
     }
 
-    const rconPassword = (serverRecord && serverRecord.rcon_password) || 'rcon123';
+    const rconPassword = (serverRecord && serverRecord.rcon_password) || '';
     const ip = queryHelper.getServerIp(info);
 
     return { ip, port, rconPassword };
@@ -47,16 +47,22 @@ router.get('/:id', async (req, res) => {
         const players = await queryHelper.getPlayersList(ip, port);
         res.json({ players });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(e.statusCode || 500).json({ error: e.message });
     }
 });
 
 // POST /api/players/:id/action - Player action (kick, ban, slap, slay)
 router.post('/:id/action', async (req, res) => {
     try {
-        const { action, name, duration, reason } = req.body;
+        const { action } = req.body;
+        // Player names come from the game and are attacker-controlled; strip
+        // everything that could terminate the quoted RCON argument.
+        const clean = value => String(value || '').replace(/["\r\n;\\]/g, '').trim().slice(0, 64);
+        const name = clean(req.body.name);
+        const reason = clean(req.body.reason).slice(0, 100);
+        const duration = Math.max(0, Math.min(525600, parseInt(req.body.duration, 10) || 0));
         if (!action || !name) {
-            return res.status(400).json({ error: 'Action and Player Name are required' });
+            return res.status(400).json({ error: 'İşlem ve oyuncu adı zorunludur.' });
         }
 
         const { ip, port, rconPassword } = await getServerConnectionDetails(req.docker, req.params.id, req.serverRecord);
@@ -73,19 +79,17 @@ router.post('/:id/action', async (req, res) => {
                 command = `amx_slay "${name}"`;
                 break;
             case 'ban':
-                const mins = duration || 0;
-                command = `amx_ban "${name}" ${mins} "${reason || 'Banned by admin'}"`;
+                command = `amx_ban "${name}" ${duration} "${reason || 'Banned by admin'}"`;
                 break;
             default:
                 return res.status(400).json({ error: `Invalid action: ${action}` });
         }
 
-        console.log(`Executing Player Action Command: ${command} on port ${port} (IP: ${ip})`);
         const response = await queryHelper.sendRconCommand(ip, port, rconPassword, command);
 
         res.json({ success: true, message: `Command executed: ${command}`, response });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(e.statusCode || 500).json({ error: e.message });
     }
 });
 
@@ -99,7 +103,8 @@ router.get('/:id/stats', async (req, res) => {
 
         const mysql = require('mysql2/promise');
         const host = process.env.MYSQL_HOST || 'cs-mysql';
-        
+        const cfg = require('../config');
+
         let connection;
         try {
             connection = await mysql.createConnection({
@@ -128,8 +133,8 @@ router.get('/:id/stats', async (req, res) => {
                     enabled: false,
                     message: 'Leaderboard SQL table csstats/amx_stats not found. Ensure "csstats_mysql" or "statsx_sql" plugin is enabled in AMXX.',
                     dbInfo: {
-                        host: 'cs-mysql',
-                        port: 3306,
+                        host: cfg.mysql.internalHost,
+                        port: cfg.mysql.internalPort,
                         database: record.db_name,
                         username: record.db_username,
                         password: record.db_password
@@ -170,7 +175,7 @@ router.get('/:id/stats', async (req, res) => {
             if (connection) await connection.end();
         }
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(e.statusCode || 500).json({ error: e.message });
     }
 });
 
@@ -207,7 +212,10 @@ router.get('/:id/history', async (req, res) => {
                     connectionHistory = rows.map(r => ({
                         name: r.name,
                         steamid: r.authid || 'N/A',
-                        lastSeen: new Date(r.updated_at * 1000).toISOString().replace('T', ' ').slice(0, 19)
+                        lastSeen: (() => {
+                            const value = typeof r.updated_at === 'number' ? new Date(r.updated_at * 1000) : new Date(r.updated_at);
+                            return isNaN(value.getTime()) ? '-' : value.toISOString().replace('T', ' ').slice(0, 19);
+                        })()
                     }));
                     fetchedFromDb = true;
                 }
@@ -271,7 +279,7 @@ router.get('/:id/history', async (req, res) => {
             history: connectionHistory
         });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        res.status(e.statusCode || 500).json({ error: e.message });
     }
 });
 

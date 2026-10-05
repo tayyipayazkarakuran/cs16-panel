@@ -1,174 +1,110 @@
+// Keeps the always-on rental pool healthy: every configured port has a
+// running container and a database record, ready to be rented instantly.
 const panelDb = require('./panelDb');
 const fastdl = require('./fastdlService');
-const fs = require('fs');
-const path = require('path');
+const gameContainer = require('./gameContainer');
 const { isProtectedPort } = require('./serverProtection');
 
-const POOL_PORTS = [27015, 27016, 27017, 27018, 27019, 27020, 27021, 27022, 27023, 27024];
+const DEFAULT_POOL_PORTS = '27015-27024';
+const MAX_POOL_SIZE = 200;
+
+/** Parse "27015-27024,27030" into a sorted, de-duplicated port list. */
+function parsePoolPorts(value) {
+    const ports = new Set();
+    String(value || '').split(',').forEach(part => {
+        const [a, b] = part.split('-').map(s => parseInt(String(s).trim(), 10));
+        if (!Number.isInteger(a)) return;
+        const end = Number.isInteger(b) ? b : a;
+        for (let p = Math.min(a, end); p <= Math.max(a, end) && ports.size < MAX_POOL_SIZE; p++) {
+            if (p >= 1024 && p <= 65535) ports.add(p);
+        }
+    });
+    return [...ports].sort((x, y) => x - y);
+}
+
+async function getPoolPorts() {
+    const setting = await panelDb.getSetting('pool_ports').catch(() => null);
+    return parsePoolPorts(setting || process.env.POOL_PORTS || DEFAULT_POOL_PORTS);
+}
+
+let ensuring = null;
 
 async function ensurePool(docker) {
-    console.log('[Pool Service] Checking and seeding 10 servers pool...');
-    
-    // Ensure admin user exists to assign default ownership
-    const admin = await panelDb.getAdminUser();
-    if (!admin) {
-        console.log('[Pool Service] Admin user not found. Seeding skipped.');
-        return;
-    }
+    // Concurrent callers (startup, expiry job, admin button) share one run.
+    if (ensuring) return ensuring;
+    ensuring = doEnsurePool(docker).finally(() => { ensuring = null; });
+    return ensuring;
+}
+
+async function doEnsurePool(docker) {
+    const report = { created: [], started: [], skipped: [], errors: [] };
+    const ownerId = await panelDb.getPoolOwnerId();
+    const ports = await getPoolPorts();
 
     const containers = await docker.listContainers({ all: true });
     const containersByPort = new Map();
     for (const c of containers) {
-        const match = c.Names.find(n => n.includes('cs16-server-'));
-        if (match) {
-            const parts = match.split('-');
-            const port = parseInt(parts[parts.length - 1]);
-            if (port) containersByPort.set(port, c);
-        }
+        const match = (c.Names || []).find(n => /cs16-server-\d+$/.test(n));
+        if (match) containersByPort.set(parseInt(match.split('-').pop(), 10), c);
     }
-
-    const db = panelDb.assertPool();
-    const [records] = await db.query('SELECT * FROM panel_servers');
+    const [records] = await panelDb.assertPool().query('SELECT * FROM panel_servers');
     const recordsByPort = new Map(records.map(r => [r.port, r]));
 
-    for (const port of POOL_PORTS) {
-        if (isProtectedPort(port)) {
-            console.log(`[Pool Service] Port ${port} is protected; automatic repair/start is skipped.`);
-            continue;
-        }
+    for (const port of ports) {
+        if (isProtectedPort(port)) { report.skipped.push(port); continue; }
         const container = containersByPort.get(port);
         const record = recordsByPort.get(port);
 
-        // Distribute 5-5 across 2 cores: odd ports to Core 0, even ports to Core 1
-        const cpuset = (port % 2 === 1) ? '0' : '1';
+        // A rented server is never touched here; its owner controls power state.
+        if (record && !record.is_pool) {
+            if (!container) report.errors.push({ port, error: 'Kiralanmış sunucunun konteyneri bulunamadı.' });
+            continue;
+        }
 
-        if (!container || !record) {
-            console.log(`[Pool Service] Server on port ${port} is incomplete (Docker: ${!!container}, DB: ${!!record}). Recreating...`);
-            
-            // Clean any partial remains
-            if (container) {
+        try {
+            if (!container || !record) {
+                console.log(`[Pool Service] Port ${port} incomplete (container: ${!!container}, record: ${!!record}); rebuilding.`);
+                if (container) await gameContainer.removeContainerQuietly(docker, container.Id);
+                if (record) await panelDb.deleteServerRecord(record.container_id);
+
+                const resources = panelDb.buildServerResources(port);
                 try {
-                    const c = docker.getContainer(container.Id);
-                    await c.remove({ force: true });
-                } catch (e) {}
-            }
-            if (record) {
-                try {
-                    await panelDb.deleteServerRecord(record.container_id);
-                } catch (e) {}
-            }
-
-            // Create server resources
-            const rconPassword = `rcon${port}`;
-            const dbName = `cs_srv_${port}`;
-            const dbUser = `csu_${port}`;
-            const dbPass = cryptoRandomPassword();
-            const phpPath = `servers/${port}`;
-            const hostIp = process.env.FASTDL_HOST || 'YOUR_SERVER_IP';
-            const phpUrl = `http://${hostIp}:8081/?p=${port}`;
-            const svDownloadUrl = `http://${hostIp}:80/${port}/`;
-
-            // Prepare docker options
-            const volumeName = `cs16-server-${port}-cstrike`;
-            const ExposedPorts = {};
-            ExposedPorts[`${port}/udp`] = {};
-            ExposedPorts[`${port}/tcp`] = {};
-
-            const PortBindings = {};
-            PortBindings[`${port}/udp`] = [{ HostPort: port.toString() }];
-            PortBindings[`${port}/tcp`] = [{ HostPort: port.toString() }];
-
-            const fastdlPath = process.env.FASTDL_HOST_PATH || '/opt/cspanel/fastdl-data';
-            const phpWwwPath = process.env.PHP_WWW_HOST_PATH || '/opt/cspanel/php-www';
-
-            const cOpts = {
-                Image: 'cs16-server-base',
-                name: `cs16-server-${port}`,
-                ExposedPorts,
-                Env: [
-                    `PORT=${port}`,
-                    `SERVER_NAME=CS 1.6 Server ${port}`,
-                    `RCON_PASSWORD=${rconPassword}`,
-                    `MAXPLAYERS=32`,
-                    `START_MAP=de_dust2`,
-                    `SV_DOWNLOADURL=${svDownloadUrl}`
-                ],
-                HostConfig: {
-                    PortBindings,
-                    Binds: [
-                        `${volumeName}:/hlds/cstrike`,
-                        `${fastdlPath}/${port}:/fastdl-data`,
-                        `${phpWwwPath}/${port}:/php-www`
-                    ],
-                    RestartPolicy: { Name: 'always' },
-                    CapAdd: ['SYS_NICE'],
-                    CpusetCpus: cpuset,
-                    Ulimits: [
-                        { Name: 'rtprio', Soft: 99, Hard: 99 }
-                    ]
+                    await panelDb.ensureSqlAccount(resources.db_name, resources.db_username, resources.db_password);
+                } catch (e) {
+                    console.log(`[Pool Service] SQL account for ${port}:`, e.message);
                 }
-            };
-
-            // Provision SQL schema and account
-            try {
-                await panelDb.ensureSqlAccount(dbName, dbUser, dbPass);
-            } catch (e) {
-                console.log(`[Pool Service] SQL Account creation error on port ${port}:`, e.message);
-            }
-
-            // Provision FastDL files directory
-            fastdl.ensureCleanFastdlTree(port);
-
-            // Recreate container and add to network
-            try {
-                const newC = await docker.createContainer(cOpts);
-                await newC.start();
-                try {
-                    const network = docker.getNetwork('cs-network');
-                    await network.connect({ Container: newC.id });
-                } catch (e) {}
-
-                // Save record to DB (assigned to Admin initially, infinite expiry)
-                await panelDb.upsertServerRecord({
-                    container_id: newC.id,
-                    port,
-                    owner_id: admin.id,
-                    name: `CS 1.6 Server ${port}`,
-                    db_name: dbName,
-                    db_username: dbUser,
-                    db_password: dbPass,
-                    php_path: phpPath,
-                    php_url: phpUrl,
-                    fastdl_path: String(port),
-                    sv_downloadurl: svDownloadUrl,
-                    plan_type: 'free',
-                    expires_at: '2035-01-01 00:00:00'
+                fastdl.ensureCleanFastdlTree(port);
+                const rconPassword = require('crypto').randomBytes(12).toString('base64url');
+                const created = await gameContainer.createGameContainer(docker, {
+                    port, name: `CS 1.6 Server ${port}`, rconPassword, maxPlayers: 32, sql: resources
                 });
-                console.log(`[Pool Service] Server on port ${port} created and running on CPU Core ${cpuset}.`);
-            } catch (dockerErr) {
-                console.error(`[Pool Service] Failed to create container for port ${port}:`, dockerErr.message);
+                await panelDb.upsertServerRecord({
+                    container_id: created.id,
+                    port,
+                    owner_id: ownerId,
+                    name: `CS 1.6 Server ${port}`,
+                    ...resources,
+                    rcon_password: rconPassword,
+                    plan_type: 'free',
+                    expires_at: new Date('2035-01-01T00:00:00Z'),
+                    is_pool: true
+                });
+                report.created.push(port);
+            } else if (container.State !== 'running') {
+                await docker.getContainer(container.Id).start();
+                report.started.push(port);
             }
-        } else {
-            // Container and record exist, ensure it is running
-            try {
-                const c = docker.getContainer(container.Id);
-                const info = await c.inspect();
-                if (!info.State.Running) {
-                    console.log(`[Pool Service] Server on port ${port} was offline. Starting it...`);
-                    await c.start();
-                }
-            } catch (inspectErr) {
-                console.log(`[Pool Service] Check container error on port ${port}:`, inspectErr.message);
-            }
+        } catch (error) {
+            console.error(`[Pool Service] port ${port}:`, error.message);
+            report.errors.push({ port, error: error.message });
         }
     }
-}
-
-function cryptoRandomPassword() {
-    return require('crypto').randomBytes(12).toString('hex');
+    return report;
 }
 
 module.exports = {
-    POOL_PORTS,
+    DEFAULT_POOL_PORTS,
+    parsePoolPorts,
+    getPoolPorts,
     ensurePool
 };

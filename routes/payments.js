@@ -14,21 +14,21 @@ const storage = multer.diskStorage({
         cb(null, uploadDir);
     },
     filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
+        const uniqueSuffix = Date.now() + '-' + require('crypto').randomInt(1e9);
+        cb(null, uniqueSuffix + path.extname(file.originalname).toLowerCase());
     }
 });
 
 const fileFilter = (req, file, cb) => {
     // Only allow images and PDFs
-    const allowedTypes = /jpeg|jpg|png|pdf/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
+    const allowedTypes = /^(jpeg|jpg|png|pdf)$/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase().slice(1));
+    const mimetype = /^(image\/(jpeg|png)|application\/pdf)$/.test(file.mimetype);
 
     if (extname && mimetype) {
         return cb(null, true);
     } else {
-        cb(new Error('Only images (jpg/png) and PDFs are allowed!'));
+        cb(Object.assign(new Error('Dekont yalnızca JPG, PNG veya PDF olabilir.'), { statusCode: 400 }));
     }
 };
 
@@ -71,8 +71,14 @@ function requireAdmin(req, res, next) {
 // GET /api/payments/iban - Fetch current dynamic IBAN details (User)
 router.get('/iban', async (req, res) => {
     try {
-        const iban = await req.panelDb.getSetting('iban_details');
-        res.json({ success: true, iban_details: iban || 'TR00 0000 0000 0000 0000 0000 00' });
+        const settings = await req.panelDb.getSettingsMap(['iban_details', 'min_deposit', 'currency']);
+        res.json({
+            success: true,
+            iban_details: settings.iban_details || '',
+            min_deposit: parseFloat(settings.min_deposit || '10'),
+            currency: settings.currency || 'TL',
+            reference_code: req.panelDb.depositReferenceCode(req.user.id)
+        });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -87,10 +93,16 @@ router.post('/report', upload.single('receipt'), async (req, res) => {
             return res.status(400).json({ error: 'Amount and Sender Name are required' });
         }
 
-        const parsedAmount = parseFloat(amount);
-        if (isNaN(parsedAmount) || parsedAmount <= 0 || parsedAmount > 1000000) {
+        const parsedAmount = Math.round(parseFloat(amount) * 100) / 100;
+        const minDeposit = parseFloat(await req.panelDb.getSetting('min_deposit') || '10');
+        if (isNaN(parsedAmount) || parsedAmount < minDeposit || parsedAmount > 1000000) {
             removeUploadedReceipt(req);
-            return res.status(400).json({ error: 'Valid amount is required' });
+            return res.status(400).json({ error: `Tutar en az ${minDeposit.toFixed(2)} olmalıdır.` });
+        }
+        const [pendingRows] = await req.panelDb.assertPool().query("SELECT COUNT(*) AS c FROM panel_payments WHERE user_id = ? AND status = 'pending'", [req.user.id]);
+        if (pendingRows[0].c >= 5) {
+            removeUploadedReceipt(req);
+            return res.status(429).json({ error: 'Onay bekleyen 5 bildiriminiz var. Lütfen önce bunların sonuçlanmasını bekleyin.' });
         }
         if (String(senderName).trim().length > 120) {
             removeUploadedReceipt(req);
@@ -114,14 +126,20 @@ router.post('/report', upload.single('receipt'), async (req, res) => {
             receiptPath
         );
 
-        res.status(201).json({ 
-            success: true, 
-            message: 'Payment report submitted successfully. Waiting for admin approval.',
+        await req.panelDb.notifyAdmins({
+            type: 'info',
+            title: 'Yeni ödeme bildirimi',
+            body: `${req.user.username}: ${parsedAmount.toFixed(2)} (${String(senderName).trim()})`,
+            link: '#/admin/payments'
+        });
+        res.status(201).json({
+            success: true,
+            message: 'Ödeme bildiriminiz alındı. Yönetici onayından sonra bakiyenize yansıyacak.',
             paymentId
         });
     } catch (e) {
         removeUploadedReceipt(req);
-        res.status(500).json({ error: e.message });
+        res.status(e.statusCode || 500).json({ error: e.message });
     }
 });
 
@@ -159,33 +177,62 @@ router.get('/receipt/:filename', async (req, res) => {
     }
 });
 
-// GET /api/payments/admin/pending - View pending payments (Admin)
-router.get('/admin/pending', requireAdmin, async (req, res) => {
+// GET /api/payments/admin/list?status=pending|approved|rejected
+router.get('/admin/list', requireAdmin, async (req, res) => {
     try {
-        const payments = await req.panelDb.getPendingPayments();
-        res.json({ success: true, payments });
+        const status = ['pending', 'approved', 'rejected'].includes(req.query.status) ? req.query.status : null;
+        res.json({ success: true, payments: await req.panelDb.listPayments({ status, limit: req.query.limit || 200 }) });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-// POST /api/payments/admin/:id/approve - Approve a payment (Admin)
-router.post('/admin/:id/approve', requireAdmin, async (req, res) => {
+// Kept for older clients.
+router.get('/admin/pending', requireAdmin, async (req, res) => {
     try {
-        await req.panelDb.approvePayment(req.params.id);
-        res.json({ success: true, message: 'Payment approved and user balance updated.' });
+        res.json({ success: true, payments: await req.panelDb.getPendingPayments() });
     } catch (e) {
-        res.status(400).json({ error: e.message });
+        res.status(500).json({ error: e.message });
     }
 });
 
-// POST /api/payments/admin/:id/reject - Reject a payment (Admin)
+// POST /api/payments/admin/:id/approve { amount?, note? }
+router.post('/admin/:id/approve', requireAdmin, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        const body = req.body || {};
+        const result = await req.panelDb.approvePayment(id, { actorId: req.user.id, creditedAmount: body.amount, note: body.note });
+        await req.panelDb.logAudit({ actorId: req.user.id, actorName: req.user.username, action: 'payment.approve', targetType: 'payment', targetId: id, details: { amount: result.amount }, ip: req.ip });
+        await req.panelDb.notify(result.userId, {
+            type: 'success',
+            title: 'Ödemeniz onaylandı',
+            body: `${result.amount.toFixed(2)} bakiyenize eklendi.${body.note ? ` Not: ${String(body.note).slice(0, 200)}` : ''}`,
+            link: '#/billing'
+        });
+        res.json({ success: true, message: 'Ödeme onaylandı ve bakiye yüklendi.' });
+    } catch (e) {
+        res.status(e.statusCode || 400).json({ error: e.message });
+    }
+});
+
+// POST /api/payments/admin/:id/reject { note? }
 router.post('/admin/:id/reject', requireAdmin, async (req, res) => {
     try {
-        await req.panelDb.rejectPayment(req.params.id);
-        res.json({ success: true, message: 'Payment rejected successfully.' });
+        const id = parseInt(req.params.id, 10);
+        const note = req.body && req.body.note;
+        const result = await req.panelDb.rejectPayment(id, { actorId: req.user.id, note });
+        await req.panelDb.logAudit({ actorId: req.user.id, actorName: req.user.username, action: 'payment.reject', targetType: 'payment', targetId: id, ip: req.ip });
+        if (result.userId) {
+            await req.panelDb.notify(result.userId, {
+                type: 'danger',
+                title: 'Ödeme bildiriminiz reddedildi',
+                body: note ? String(note).slice(0, 300) : 'Ayrıntı için destek ile iletişime geçin.',
+                link: '#/billing'
+            });
+        }
+        res.json({ success: true, message: 'Ödeme bildirimi reddedildi.' });
     } catch (e) {
-        res.status(400).json({ error: e.message });
+        res.status(e.statusCode || 400).json({ error: e.message });
     }
 });
 

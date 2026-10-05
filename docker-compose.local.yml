@@ -8,8 +8,6 @@ services:
       - PANEL_COOKIE_SECURE=false
       - FASTDL_HOST=127.0.0.1
       - FASTDL_PORT=18080
-      - MYSQL_PUBLIC_HOST=cs-mysql
-      - MYSQL_PUBLIC_PORT=3306
       - PHP_PUBLIC_BASE_URL=http://127.0.0.1:18081
 
   cs-fastdl:

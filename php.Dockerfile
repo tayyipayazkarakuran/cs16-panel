@@ -1,16 +1,22 @@
+# CS 1.6 panel — multi-tenant PHP 8.2 website host (Apache + mod_php)
 FROM php:8.2-apache
 
-RUN docker-php-ext-install mysqli pdo_mysql
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libzip-dev libpng-dev libjpeg62-turbo-dev libfreetype6-dev libonig-dev libicu-dev \
+ && docker-php-ext-configure gd --with-freetype --with-jpeg \
+ && docker-php-ext-install -j"$(nproc)" mysqli pdo_mysql zip gd mbstring intl exif opcache bcmath \
+ && apt-get purge -y --auto-remove \
+ && rm -rf /var/lib/apt/lists/*
 
-RUN a2enmod rewrite
+RUN a2enmod rewrite headers expires deflate
 
-# docker-php.conf has its own <Directory /var/www/> block with Options -Indexes
-# which overrides apache2.conf. Fix it here.
-RUN sed -i 's/Options -Indexes/Options +Indexes/' /etc/apache2/conf-enabled/docker-php.conf
+COPY php/panel-php.ini /usr/local/etc/php/conf.d/zz-panel.ini
+COPY php/panel-prepend.php /usr/local/etc/php/panel-prepend.php
+COPY php/apache-vhost.conf /etc/apache2/sites-available/000-default.conf
+COPY php/entrypoint.sh /usr/local/bin/panel-php-entrypoint
+RUN sed -i 's/\r$//' /usr/local/bin/panel-php-entrypoint \
+ && chmod 0755 /usr/local/bin/panel-php-entrypoint \
+ && chmod 0644 /usr/local/etc/php/panel-prepend.php \
+ && apache2ctl -t
 
-# Auto-prepend: session-based port tracking + output buffer URL rewrite
-RUN echo 'auto_prepend_file = /var/www/html/.prepend.php' >> /usr/local/etc/php/conf.d/panel.ini
-
-# Create /var/www/html/servers directory and set permissions
-RUN mkdir -p /var/www/html/servers \
- && chown -R www-data:www-data /var/www/html
+CMD ["panel-php-entrypoint"]

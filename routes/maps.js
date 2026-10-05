@@ -72,12 +72,14 @@ router.post('/:id/mapcycle', async (req, res) => {
         const container = req.docker.getContainer(req.params.id);
         const { mapcycle } = req.body;
 
-        if (!Array.isArray(mapcycle)) {
-            return res.status(400).json({ error: 'mapcycle must be an array' });
+        if (!Array.isArray(mapcycle) || mapcycle.length > 500) {
+            return res.status(400).json({ error: 'mapcycle must be an array (max 500 maps)' });
         }
+        const invalid = mapcycle.map(m => String(m).trim()).filter(Boolean).find(m => !/^[A-Za-z0-9_.-]{1,64}$/.test(m));
+        if (invalid) return res.status(400).json({ error: `Geçersiz harita adı: ${invalid}` });
 
         const mapcyclePath = 'mapcycle.txt';
-        await cFs.writeFile(container, mapcyclePath, mapcycle.join('\n'));
+        await cFs.writeFile(container, mapcyclePath, `${mapcycle.map(m => String(m).trim()).filter(Boolean).join('\n')}\n`);
 
         res.json({ success: true, message: 'mapcycle.txt updated successfully' });
     } catch (e) {

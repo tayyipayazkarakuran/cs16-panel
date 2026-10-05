@@ -2,9 +2,11 @@ const fs = require('fs');
 const path = require('path');
 const containerFs = require('./containerFsHelper');
 
-const FASTDL_PATH = process.env.FASTDL_PATH || path.join(__dirname, 'fastdl-data');
-const FASTDL_HOST = process.env.FASTDL_HOST || '127.0.0.1';
-const FASTDL_PORT = process.env.FASTDL_PORT || '8080';
+const cfg = require('./config');
+
+const FASTDL_PATH = cfg.fastdl.path;
+const FASTDL_HOST = cfg.fastdl.host;
+const FASTDL_PORT = cfg.fastdl.port;
 
 const CATEGORY_MAP = {
     maps: { source: 'maps', dest: 'maps' },
@@ -17,20 +19,23 @@ const CATEGORY_MAP = {
 
 const DEFAULT_CATEGORIES = ['maps', 'models', 'sound', 'sprites', 'gfx'];
 const FASTDL_DIRS = ['maps', 'models', 'sound', 'sprites', 'gfx'];
-const ALLOWED_EXTS = new Set(['.bsp', '.wad', '.mdl', '.spr', '.wav', '.mp3', '.tga', '.res', '.txt', '.cfg', '.bmp']);
-const ROOT_ASSET_EXTS = new Set(['.wad', '.tga', '.bsp', '.res', '.txt', '.cfg']);
+// Only files a GoldSrc client downloads. Config files (.cfg/.ini) must never be
+// mirrored: the FastDL host is public and server.cfg holds rcon_password.
+const ALLOWED_EXTS = new Set(['.bsp', '.wad', '.mdl', '.spr', '.wav', '.mp3', '.tga', '.res', '.txt', '.bmp']);
+const ROOT_ASSET_EXTS = new Set(['.wad']);
+const PY_ALLOWED_EXTS = "{'.bsp', '.res', '.wav', '.mp3', '.mdl', '.spr', '.txt', '.tga', '.wad', '.bmp'}";
+const PY_SENSITIVE_EXTS = "('.cfg', '.ini', '.sma', '.amxx', '.log', '.so', '.dll', '.sq3', '.vault', '.json', '.php')";
 
 function fastdlDir(port) {
     return path.join(FASTDL_PATH, String(port));
 }
 
 function fastdlUrl(port) {
-    const portStr = (FASTDL_PORT === '80' || FASTDL_PORT === '443') ? '' : `:${FASTDL_PORT}`;
-    return `http://${FASTDL_HOST}${portStr}/${port}`;
+    return cfg.fastdlUrl(port).replace(/\/$/, '');
 }
 
 function svDownloadUrl(port) {
-    return `${fastdlUrl(port)}/`;
+    return cfg.fastdlUrl(port);
 }
 
 function ensureDir(dirPath) {
@@ -84,124 +89,6 @@ function normalizeCategories(categories) {
     return normalized.length ? normalized : DEFAULT_CATEGORIES.map(cat => CATEGORY_MAP[cat]);
 }
 
-function demuxDockerChunk(chunk) {
-    if (chunk.length >= 8 && (chunk[0] === 1 || chunk[0] === 2)) {
-        let offset = 0;
-        let text = '';
-        while (offset + 8 <= chunk.length) {
-            const size = chunk.readUInt32BE(offset + 4);
-            text += chunk.toString('utf8', offset + 8, offset + 8 + size);
-            offset += 8 + size;
-        }
-        return text;
-    }
-    return chunk.toString('utf8');
-}
-
-async function collectExecOutput(exec) {
-    const stream = await exec.start({});
-    let output = '';
-    await new Promise((resolve, reject) => {
-        stream.on('data', chunk => { output += demuxDockerChunk(chunk); });
-        stream.on('end', resolve);
-        stream.on('error', reject);
-    });
-    return output;
-}
-
-async function listContainerFiles(container, sourceRoot, allowedExts) {
-    const pythonScript = `
-import os, json, sys
-root = sys.argv[1]
-allowed = set(sys.argv[2].split(","))
-items = []
-if os.path.exists(root):
-    for current, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        for name in files:
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in allowed:
-                continue
-            full = os.path.join(current, name)
-            rel = os.path.relpath(full, root).replace(os.sep, "/")
-            try:
-                items.append({"rel": rel, "size": os.path.getsize(full)})
-            except Exception:
-                pass
-print(json.dumps(items))
-`;
-    const exec = await container.exec({
-        Cmd: ['python3', '-c', pythonScript, `/hlds/cstrike/${sourceRoot}`, Array.from(allowedExts).join(',')],
-        AttachStdout: true,
-        AttachStderr: true
-    });
-    const output = await collectExecOutput(exec);
-    try {
-        return JSON.parse(output.trim() || '[]');
-    } catch (e) {
-        return [];
-    }
-}
-
-async function listContainerRootAssets(container) {
-    const pythonScript = `
-import os, json, sys
-root = sys.argv[1]
-allowed = set(sys.argv[2].split(","))
-items = []
-if os.path.exists(root):
-    for name in os.listdir(root):
-        full = os.path.join(root, name)
-        if not os.path.isfile(full):
-            continue
-        ext = os.path.splitext(name)[1].lower()
-        if ext in allowed:
-            items.append({"rel": name, "size": os.path.getsize(full)})
-print(json.dumps(items))
-`;
-    const exec = await container.exec({
-        Cmd: ['python3', '-c', pythonScript, '/hlds/cstrike', Array.from(ROOT_ASSET_EXTS).join(',')],
-        AttachStdout: true,
-        AttachStderr: true
-    });
-    const output = await collectExecOutput(exec);
-    try {
-        return JSON.parse(output.trim() || '[]');
-    } catch (e) {
-        return [];
-    }
-}
-
-async function readContainerFile(container, absolutePath) {
-    const pythonScript = `
-import sys, base64
-try:
-    with open(sys.argv[1], "rb") as f:
-        sys.stdout.write(base64.b64encode(f.read()).decode("ascii"))
-except Exception as e:
-    sys.stderr.write(str(e))
-`;
-    const exec = await container.exec({
-        Cmd: ['python3', '-c', pythonScript, absolutePath],
-        AttachStdout: true,
-        AttachStderr: true
-    });
-    const output = await collectExecOutput(exec);
-    return Buffer.from(output.trim(), 'base64');
-}
-
-function writeFastdlFile(port, relPath, buffer) {
-    const fullPath = resolveInside(fastdlDir(port), relPath);
-    ensureDir(path.dirname(fullPath));
-    // A same-size file can still have different content after an overwrite.
-    if (fs.existsSync(fullPath)) {
-        const stat = fs.statSync(fullPath);
-        if (stat.size === buffer.length && fs.readFileSync(fullPath).equals(buffer)) return false;
-    }
-    fs.writeFileSync(fullPath, buffer);
-    return true;
-}
-
 async function findRunningContainerByPort(docker, port) {
     const containers = await docker.listContainers({ all: false });
     return containers.find(c => c.Ports && c.Ports.some(p => p.PublicPort == port && p.Type === 'udp')) || null;
@@ -213,54 +100,56 @@ async function syncFastdlFromContainer(container, port, categories = null) {
     
     const pythonScript = `
 import sys, os, shutil, json, filecmp
-allowed_exts = {'.bsp', '.res', '.wav', '.mp3', '.mdl', '.spr', '.txt', '.cfg', '.tga', '.wad', '.bmp'}
+allowed_exts = ${PY_ALLOWED_EXTS}
+sensitive_exts = ${PY_SENSITIVE_EXTS}
 src_root = '/hlds/cstrike'
 dst_root = '/fastdl-data'
 folders = sys.argv[1].split(',') if len(sys.argv) > 1 and sys.argv[1] else ['maps', 'models', 'sound', 'sprites']
 total_copied = 0
 total_errors = 0
 logs = []
+# Purge anything that should never be public (older panel versions mirrored
+# server.cfg and other configs into FastDL).
+for root, dirs, files in os.walk(dst_root):
+    for name in files:
+        if name.lower().endswith(sensitive_exts):
+            try:
+                os.unlink(os.path.join(root, name))
+                logs.append("PURGE: " + os.path.relpath(os.path.join(root, name), dst_root))
+            except Exception:
+                pass
+def copy_one(src_file, rel_path):
+    global total_copied, total_errors
+    if os.path.islink(src_file):
+        return
+    dst_file = os.path.join(dst_root, rel_path)
+    if os.path.exists(dst_file) and filecmp.cmp(dst_file, src_file, shallow=False):
+        return
+    try:
+        os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+        tmp = dst_file + '.cspanel-tmp'
+        shutil.copyfile(src_file, tmp)
+        os.replace(tmp, dst_file)
+        total_copied += 1
+        logs.append("OK: " + rel_path)
+    except Exception as e:
+        total_errors += 1
+        logs.append("ERR: " + rel_path + " - " + str(e))
 for folder in folders:
     src_dir = os.path.join(src_root, folder)
-    if not os.path.exists(src_dir):
+    if not os.path.isdir(src_dir):
         continue
     for root, dirs, files in os.walk(src_dir):
         for file in files:
-            ext = os.path.splitext(file)[1].lower()
-            if ext not in allowed_exts:
+            if os.path.splitext(file)[1].lower() not in allowed_exts:
                 continue
             src_file = os.path.join(root, file)
-            rel_path = os.path.relpath(src_file, src_root)
-            dst_file = os.path.join(dst_root, rel_path)
-            if os.path.exists(dst_file) and filecmp.cmp(dst_file, src_file, shallow=False):
-                logs.append("SKIP: " + rel_path + " (unchanged)")
-                continue
-            os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-            try:
-                shutil.copy2(src_file, dst_file)
-                total_copied += 1
-                logs.append("OK: " + rel_path)
-            except Exception as e:
-                total_errors += 1
-                logs.append("ERR: " + rel_path + " - " + str(e))
+            copy_one(src_file, os.path.relpath(src_file, src_root))
 if 'maps' in folders:
     for file in os.listdir(src_root):
         full_src = os.path.join(src_root, file)
-        if not os.path.isfile(full_src):
-            continue
-        ext = os.path.splitext(file)[1].lower()
-        if ext in {'.wad', '.tga', '.bsp', '.res', '.txt', '.cfg'}:
-            dst_file = os.path.join(dst_root, file)
-            if os.path.exists(dst_file) and filecmp.cmp(dst_file, full_src, shallow=False):
-                logs.append("SKIP: " + file + " (unchanged)")
-                continue
-            try:
-                shutil.copy2(full_src, dst_file)
-                total_copied += 1
-                logs.append("OK: " + file)
-            except Exception as e:
-                total_errors += 1
-                logs.append("ERR: " + file + " - " + str(e))
+        if os.path.isfile(full_src) and os.path.splitext(file)[1].lower() == '.wad':
+            copy_one(full_src, file)
 print(json.dumps({
     "success": True,
     "totalCopied": total_copied,
@@ -270,13 +159,10 @@ print(json.dumps({
 `;
 
     try {
-        const exec = await container.exec({
-            Cmd: ['python3', '-c', pythonScript, foldersList],
-            AttachStdout: true,
-            AttachStderr: true
-        });
-        const output = await collectExecOutput(exec);
-        const result = JSON.parse(output.trim());
+        const exec = await containerFs.runExec(container, {
+            Cmd: ['python3', '-c', pythonScript, foldersList]
+        }, { timeoutMs: 600000 });
+        const result = JSON.parse(exec.output.trim().split('\n').pop());
         result.fastdlUrl = fastdlUrl(port);
         result.message = `Sync complete. ${result.totalCopied} files copied, ${result.totalErrors} errors.`;
         return result;
@@ -335,7 +221,7 @@ for rel in files:
     src = os.path.join(src_root, rel)
     dst = os.path.join(dst_root, rel)
     try:
-        if not os.path.isfile(src):
+        if os.path.islink(src) or not os.path.isfile(src):
             raise FileNotFoundError(src)
         if os.path.exists(dst) and filecmp.cmp(dst, src, shallow=False):
             logs.append('SKIP: ' + rel + ' (unchanged)')
