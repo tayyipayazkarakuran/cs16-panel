@@ -14,7 +14,9 @@ COPY php/panel-php.ini /usr/local/etc/php/conf.d/zz-panel.ini
 COPY php/panel-prepend.php /usr/local/etc/php/panel-prepend.php
 COPY php/apache-vhost.conf /etc/apache2/sites-available/000-default.conf
 COPY php/entrypoint.sh /usr/local/bin/panel-php-entrypoint
-RUN sed -i 's/\r$//' /usr/local/bin/panel-php-entrypoint \
+RUN mkdir -p /var/www/html/servers /var/www/html/.panel \
+ && touch /var/www/html/.panel/domains.map \
+ && sed -i 's/\r$//' /usr/local/bin/panel-php-entrypoint \
  && chmod 0755 /usr/local/bin/panel-php-entrypoint \
  && chmod 0644 /usr/local/etc/php/panel-prepend.php \
  && apache2ctl -t
