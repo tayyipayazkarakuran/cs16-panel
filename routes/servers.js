@@ -6,6 +6,7 @@ const gameContainer = require('../gameContainer');
 const billing = require('../billingService');
 const cfg = require('../config');
 const security = require('../security');
+const serverOps = require('../serverOps');
 const { assertDestructiveOperationAllowed, isProtectedPort } = require('../serverProtection');
 
 const router = express.Router();
@@ -231,29 +232,11 @@ router.post('/:id/auto-renew', async (req, res) => {
 
 async function powerAction(req, res, action) {
     try {
-        let record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
-        let container = req.docker.getContainer(req.params.id);
-        try {
-            if (action === 'start') await container.start();
-            else if (action === 'stop') await container.stop({ t: 10 });
-            else await container.restart({ t: 10 });
-        } catch (e) {
-            if (e.statusCode === 404 && action !== 'stop') {
-                // The container vanished (manual docker rm, host migration...).
-                // Rebuild it on the existing volume so no game data is lost.
-                const plan = await req.panelDb.getPlan(record.plan_type);
-                record = await billing.recreateContainerKeepingData(req.docker, record, { maxPlayers: (plan && plan.max_players) || 24 });
-                container = req.docker.getContainer(record.container_id);
-                await audit(req, 'server.recreate', record.port);
-            } else if (e.statusCode !== 304) {
-                // 304 = already in the requested state; that's success for the user.
-                throw e;
-            }
-        }
+        const current = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        const { record, recreated } = await serverOps.powerAction(req.docker, current, action);
+        if (recreated) await audit(req, 'server.recreate', record.port);
         invalidateLive(req.params.id);
-        if (action !== 'stop') {
-            gameContainer.finishProvisioningInBackground(container, record);
-        }
+        invalidateLive(record.container_id);
         await audit(req, `server.${action}`, record.port);
         const labels = { start: 'başlatıldı', stop: 'durduruldu', restart: 'yeniden başlatıldı' };
         res.json({ success: true, message: `Sunucu ${labels[action]}.`, containerId: record.container_id });
@@ -552,5 +535,253 @@ print(json.dumps({
     }
 });
 
+// ---------------------------------------------------------------------------
+//  Resource usage (docker stats + volume size)
+// ---------------------------------------------------------------------------
+
+const DISK_TTL_MS = 5 * 60 * 1000;
+const diskCache = new Map(); // containerId -> { at, bytes }
+
+async function volumeUsage(container, running) {
+    const cached = diskCache.get(container.id);
+    if (cached && Date.now() - cached.at < DISK_TTL_MS) return cached;
+    if (!running) return cached || null;
+    const result = await containerFs.runExec(container, { Cmd: ['du', '-sb', '/hlds/cstrike'] }, { timeoutMs: 30000, allowNonZero: true });
+    const bytes = parseInt(String(result.output).trim().split(/\s+/)[0], 10);
+    if (!Number.isFinite(bytes)) return cached || null;
+    const entry = { at: Date.now(), bytes };
+    diskCache.set(container.id, entry);
+    return entry;
+}
+
+router.get('/:id/resources', async (req, res) => {
+    try {
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        const container = req.docker.getContainer(record.container_id);
+        const inspect = await container.inspect();
+        const running = !!(inspect.State && inspect.State.Running);
+        let cpu = { percent: 0, cores: null };
+        let memory = { used: 0, limit: inspect.HostConfig && inspect.HostConfig.Memory ? inspect.HostConfig.Memory : 0, limited: !!(inspect.HostConfig && inspect.HostConfig.Memory) };
+        let network = { rx: 0, tx: 0 };
+        if (running) {
+            const stats = await container.stats({ stream: false });
+            cpu = serverOps.cpuPercentFromStats(stats);
+            memory = serverOps.memoryFromStats(stats, inspect.HostConfig && inspect.HostConfig.Memory);
+            network = serverOps.networkFromStats(stats);
+        }
+        const disk = await volumeUsage(container, running).catch(() => null);
+        res.json({
+            success: true,
+            running,
+            startedAt: running ? inspect.State.StartedAt : null,
+            restartCount: inspect.RestartCount || 0,
+            cpu,
+            memory,
+            network,
+            disk: disk ? { used: disk.bytes, measuredAt: new Date(disk.at).toISOString() } : null,
+            sampledAt: new Date().toISOString()
+        });
+    } catch (e) {
+        routeError(res, e);
+    }
+});
+
+// ---------------------------------------------------------------------------
+//  Launch parameters (read by entrypoint.sh at container start)
+// ---------------------------------------------------------------------------
+
+const STARTUP_FILE = 'panel_startup.cfg';
+const STARTUP_FIELDS = {
+    pingboost: { key: 'PINGBOOST', def: 2, valid: v => [0, 1, 2, 3].includes(v), error: 'pingboost 0-3 arasında olmalı.' },
+    sysTicrate: { key: 'SYS_TICRATE', def: 1000, valid: v => v >= 100 && v <= 1000, error: 'sys_ticrate 100-1000 arasında olmalı.' },
+    fpsMax: { key: 'FPS_MAX', def: 1000, valid: v => v >= 100 && v <= 1000, error: 'fps_max 100-1000 arasında olmalı.' },
+    insecure: { key: 'INSECURE', def: 0, valid: v => v === 0 || v === 1, error: 'insecure 0 veya 1 olmalı.' },
+    nomaster: { key: 'NOMASTER', def: 0, valid: v => v === 0 || v === 1, error: 'nomaster 0 veya 1 olmalı.' }
+};
+
+function parseStartupFile(content) {
+    const values = {};
+    for (const [field, spec] of Object.entries(STARTUP_FIELDS)) values[field] = spec.def;
+    String(content || '').split(/\r?\n/).forEach(line => {
+        const m = /^([A-Z_]+)=(\d+)\s*$/.exec(line.trim());
+        if (!m) return;
+        const entry = Object.entries(STARTUP_FIELDS).find(([, spec]) => spec.key === m[1]);
+        if (!entry) return;
+        const value = parseInt(m[2], 10);
+        if (entry[1].valid(value)) values[entry[0]] = value;
+    });
+    return values;
+}
+
+function normalizeStartup(input) {
+    const out = {};
+    for (const [field, spec] of Object.entries(STARTUP_FIELDS)) {
+        let raw = input[field];
+        if (raw === undefined || raw === null || raw === '') { out[field] = spec.def; continue; }
+        if (typeof raw === 'boolean') raw = raw ? 1 : 0;
+        const value = Number(raw);
+        if (!Number.isInteger(value) || !spec.valid(value)) throw cfgError(spec.error);
+        out[field] = value;
+    }
+    return out;
+}
+
+function renderStartupFile(values) {
+    return ['# Managed by CS 1.6 Panel — applied on the next server start', ...Object.entries(STARTUP_FIELDS).map(([field, spec]) => `${spec.key}=${values[field]}`)].join('\n') + '\n';
+}
+
+router.get('/:id/startup', async (req, res) => {
+    try {
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        const container = req.docker.getContainer(record.container_id);
+        let content = '';
+        try {
+            if (await containerFs.fileExists(container, STARTUP_FILE)) content = await containerFs.readFile(container, STARTUP_FILE);
+        } catch (_) { /* defaults */ }
+        res.json({ success: true, startup: parseStartupFile(content), defaults: Object.fromEntries(Object.entries(STARTUP_FIELDS).map(([f, s]) => [f, s.def])) });
+    } catch (e) {
+        routeError(res, e);
+    }
+});
+
+router.put('/:id/startup', async (req, res) => {
+    try {
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        const values = normalizeStartup(req.body || {});
+        const container = req.docker.getContainer(record.container_id);
+        await containerFs.writeFile(container, STARTUP_FILE, renderStartupFile(values));
+        let restarted = false;
+        if (req.body && (req.body.restart === true || req.body.restart === 'true')) {
+            await serverOps.powerAction(req.docker, record, 'restart');
+            invalidateLive(record.container_id);
+            restarted = true;
+        }
+        await audit(req, 'server.startup', record.port, values);
+        res.json({
+            success: true,
+            startup: values,
+            restarted,
+            message: restarted ? 'Başlatma parametreleri kaydedildi, sunucu yeniden başlatılıyor.' : 'Başlatma parametreleri kaydedildi; sunucu yeniden başlatıldığında uygulanır.'
+        });
+    } catch (e) {
+        routeError(res, e);
+    }
+});
+
+// ---------------------------------------------------------------------------
+//  Game log files & chat history (cstrike/logs/L*.log)
+// ---------------------------------------------------------------------------
+
+const LOG_FILE_RE = /^L\d{4,8}\.log$/;
+
+function assertLogFileName(name) {
+    if (!LOG_FILE_RE.test(String(name || ''))) throw cfgError('Geçersiz log dosyası adı.');
+    return String(name);
+}
+
+// "L 10/17/2026 - 21:04:11: "Nick<12><STEAM_0:1:123><CT>" say "hello""
+const CHAT_RE = /^L (\d{2})\/(\d{2})\/(\d{4}) - (\d{2}):(\d{2}):(\d{2}): "(.*)<(\d+)><([^>]*)><([^>]*)>" (say|say_team) "(.*)"(?: \(dead\))?\s*$/;
+
+function parseChatLine(line) {
+    const m = CHAT_RE.exec(line);
+    if (!m) return null;
+    return {
+        time: `${m[3]}-${m[1]}-${m[2]}T${m[4]}:${m[5]}:${m[6]}`,
+        name: m[7],
+        userId: parseInt(m[8], 10),
+        steamId: m[9],
+        team: m[10],
+        channel: m[11] === 'say_team' ? 'team' : 'all',
+        dead: /\(dead\)\s*$/.test(line),
+        message: m[12]
+    };
+}
+
+router.get('/:id/logfiles', async (req, res) => {
+    try {
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        const container = req.docker.getContainer(record.container_id);
+        const script = `
+import os, json
+root = '/hlds/cstrike/logs'
+items = []
+if os.path.isdir(root):
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if name.startswith('L') and name.endswith('.log') and os.path.isfile(path) and not os.path.islink(path):
+            st = os.stat(path)
+            items.append({'name': name, 'size': st.st_size, 'modified': int(st.st_mtime)})
+items.sort(key=lambda i: i['modified'], reverse=True)
+print(json.dumps(items[:200]))
+`;
+        const result = await containerFs.runExec(container, { Cmd: ['python3', '-c', script] }, { timeoutMs: 20000 });
+        const files = JSON.parse(result.output.trim() || '[]').map(f => ({ ...f, modified: new Date(f.modified * 1000).toISOString() }));
+        res.json({ success: true, files });
+    } catch (e) {
+        routeError(res, e);
+    }
+});
+
+router.get('/:id/logfiles/download', async (req, res) => {
+    try {
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        const name = assertLogFileName(req.query.file);
+        const container = req.docker.getContainer(record.container_id);
+        const file = await containerFs.openFileStream(container, `logs/${name}`);
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${record.port}-${name}"`);
+        res.setHeader('Content-Length', String(file.size));
+        file.stream.on('end', file.done);
+        file.stream.on('error', err => res.destroy(err));
+        file.stream.pipe(res);
+    } catch (e) {
+        routeError(res, e);
+    }
+});
+
+router.get('/:id/chat', async (req, res) => {
+    try {
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id);
+        const container = req.docker.getContainer(record.container_id);
+        const file = req.query.file ? assertLogFileName(req.query.file) : '';
+        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 300, 20), 2000);
+        // Read only the say/say_team lines of the newest (or chosen) log files.
+        const script = `
+import os, sys, json
+root = '/hlds/cstrike/logs'
+wanted = sys.argv[1]
+limit = int(sys.argv[2])
+names = []
+if os.path.isdir(root):
+    names = sorted([n for n in os.listdir(root) if n.startswith('L') and n.endswith('.log')], key=lambda n: os.path.getmtime(os.path.join(root, n)), reverse=True)
+if wanted:
+    names = [wanted] if wanted in names else []
+lines = []
+for name in names[:10]:
+    path = os.path.join(root, name)
+    if os.path.islink(path):
+        continue
+    with open(path, 'rb') as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        f.seek(max(0, size - 4000000))
+        chunk = f.read().decode('utf-8', 'ignore').splitlines()
+    found = [l for l in chunk if '" say "' in l or '" say_team "' in l]
+    lines = found + lines
+    if len(lines) >= limit:
+        break
+print(json.dumps({'files': names[:10], 'lines': lines[-limit:]}))
+`;
+        const result = await containerFs.runExec(container, { Cmd: ['python3', '-c', script, file, String(limit)] }, { timeoutMs: 30000 });
+        const data = JSON.parse(result.output.trim() || '{}');
+        const q = String(req.query.q || '').trim().toLowerCase().slice(0, 100);
+        let messages = (data.lines || []).map(parseChatLine).filter(Boolean);
+        if (q) messages = messages.filter(m => m.message.toLowerCase().includes(q) || m.name.toLowerCase().includes(q) || m.steamId.toLowerCase().includes(q));
+        res.json({ success: true, messages: messages.reverse(), files: data.files || [] });
+    } catch (e) {
+        routeError(res, e);
+    }
+});
+
 module.exports = router;
-module.exports._test = { validateCvarValue, updateOrAppendCfg, extractCfgValue };
+module.exports._test = { validateCvarValue, updateOrAppendCfg, extractCfgValue, parseChatLine, assertLogFileName, normalizeStartup, parseStartupFile, renderStartupFile };

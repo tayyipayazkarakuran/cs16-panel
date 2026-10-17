@@ -1,4 +1,4 @@
-import { append, state, api, h, icon, btn, card, clear, field, input, select, fmtMoney, withBusy, toast, generatePassword, emptyState, navigate, loading, errorBox } from '../core.js';
+import { append, state, api, h, icon, btn, linkBtn, card, clear, field, input, select, fmtMoney, withBusy, toast, generatePassword, emptyState, navigate, loading, errorBox } from '../core.js';
 import { loadServers, loadSummary } from '../main.js';
 
 const PERIODS = [1, 3, 6, 12];
@@ -11,7 +11,7 @@ export function planCard(plan, { selected, onSelect, cta = null }) {
         'aria-pressed': selected ? 'true' : 'false',
         onClick: () => onSelect && onSelect(plan)
     },
-    h('div', {}, h('h3', {}, plan.name), plan.description ? h('p', { class: 'small muted', style: { marginTop: '4px' } }, plan.description) : null),
+    h('div', {}, h('h3', {}, plan.name), plan.description ? h('p', { class: 'small muted mt-1' }, plan.description) : null),
     h('div', { class: 'price' }, plan.price > 0 ? fmtMoney(plan.price) : 'Ücretsiz',
         h('small', {}, plan.is_trial ? ` / ${plan.duration_days} gün` : ` / ${plan.duration_days} gün`)),
     h('ul', {},
@@ -53,13 +53,13 @@ export async function render({ root, setTitle, isCurrent }) {
     const planGrid = h('div', { class: 'plans' });
     const periodBox = h('div', { class: 'segmented', role: 'group', 'aria-label': 'Ödeme dönemi' });
     const summaryBody = h('div');
-    const couponInput = input({ placeholder: 'KUPONKODU', autocomplete: 'off', style: { textTransform: 'uppercase' } });
+    const couponInput = input({ placeholder: 'KUPONKODU', autocomplete: 'off', class: 'code uppercase' });
     const couponMsg = h('div', { class: 'small' });
     const nameInput = input({ id: 'rent-name', required: true, maxlength: 64, placeholder: 'Örn: Efsane Public [1000 FPS]' });
     const rconInput = input({ id: 'rent-rcon', required: true, minlength: 8, maxlength: 64, value: generatePassword(14), class: 'code', autocomplete: 'off' });
     const mapSelect = select(['de_dust2', 'de_inferno', 'de_nuke', 'de_train', 'de_mirage', 'cs_office', 'cs_assault', 'de_aztec'], { id: 'rent-map', value: 'de_dust2' });
     const portSelect = select([{ value: '', label: `Otomatik seç (${available.length} müsait)` }, ...available.map(s => ({ value: s.port, label: `Port ${s.port}` }))], { id: 'rent-port' });
-    const submit = btn('Ödemeyi onayla ve kirala', { variant: 'primary', iconName: 'cart', attrs: { class: 'btn btn-primary btn-block' } });
+    const submit = btn('Ödemeyi onayla ve kirala', { variant: 'primary', iconName: 'cart', block: true });
 
     let discounts = {};
     let quoteSeq = 0;
@@ -102,7 +102,7 @@ export async function render({ root, setTitle, isCurrent }) {
                 h('div', { class: 'summary-line small' }, h('span', { class: 'muted' }, 'Mevcut bakiye'), h('span', { class: enough ? '' : 'text-danger' }, fmtMoney(balance))),
                 enough ? null : h('div', { class: 'alert alert-warning mt-8' }, icon('wallet'),
                     h('div', {}, h('strong', {}, 'Bakiye yetersiz'), h('p', {}, `${fmtMoney(q.total - balance)} daha yüklemeniz gerekiyor.`)),
-                    h('div', { class: 'alert-actions' }, h('a', { class: 'btn btn-sm btn-primary', href: '#/billing' }, 'Bakiye yükle'))));
+                    h('div', { class: 'alert-actions' }, linkBtn('Bakiye yükle', '#/billing', { size: 'sm', variant: 'primary' }))));
             submit.disabled = !enough || !available.length;
             paintPeriods();
         } catch (error) {

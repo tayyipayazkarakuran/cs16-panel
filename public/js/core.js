@@ -205,6 +205,16 @@ const ICONS = {
     more: 'M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM19 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM5 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z',
     arrowUp: 'M12 19V5M5 12l7-7 7 7',
     arrowDown: 'M12 5v14M19 12l-7 7-7-7',
+    arrowLeft: 'M19 12H5M12 19l-7-7 7-7',
+    arrowRight: 'M5 12h14M12 5l7 7-7 7',
+    calendar: 'M4 5h16v16H4zM16 3v4M8 3v4M4 11h16',
+    chat: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
+    hardDrive: 'M22 12H2M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1zM6 16h.01M10 16h.01',
+    memory: 'M6 19v2M10 19v2M14 19v2M18 19v2M3 7h18v12H3zM7 11h2v4H7zM15 11h2v4h-2z',
+    network: 'M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M2 9a15 15 0 0 1 20 0M12 20h.01',
+    filter: 'M22 3H2l8 9.5V19l4 2v-8.5z',
+    pause: 'M6 4h4v16H6zM14 4h4v16h-4z',
+    rocket: 'M4.5 16.5c-1.5 1.3-2 5-2 5s3.7-.5 5-2c.7-.8.7-2.1-.1-2.9a2.2 2.2 0 0 0-2.9-.1zM12 15l-3-3a22 22 0 0 1 2-4A12.9 12.9 0 0 1 22 2c0 2.7-.8 7.5-6 11a22.4 22.4 0 0 1-4 2zM9 12H4s.6-3 2-4c1.6-1.1 5 0 5 0M12 15v5s3-.6 4-2c1.1-1.6 0-5 0-5',
     search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3',
     eye: 'M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
     layers: 'M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5',
@@ -224,19 +234,99 @@ export function icon(name, cls = '') {
     return svg;
 }
 
-export function btn(label, { variant = '', size = '', iconName = null, onClick, type = 'button', title, disabled, attrs = {} } = {}) {
-    const classes = ['btn', variant && `btn-${variant}`, size && `btn-${size}`, !label && 'btn-icon'].filter(Boolean).join(' ');
-    return h('button', { class: classes, type, onClick, title, 'aria-label': !label ? title : null, disabled, ...attrs },
-        iconName ? icon(iconName, size ? 'icon-sm' : '') : null, label || null);
+export function btn(label, { variant = '', size = '', iconName = null, onClick, type = 'button', title, disabled, block = false, className = '', attrs = {} } = {}) {
+    const classes = ['btn', variant && `btn-${variant}`, size && `btn-${size}`, !label && 'btn-icon', block && 'btn-block', className].filter(Boolean).join(' ');
+    return h('button', { class: classes, type, onClick, title: title || null, 'aria-label': !label ? title : null, disabled, ...attrs },
+        iconName ? icon(iconName, size ? 'icon-sm' : '') : null, label ? h('span', {}, label) : null);
 }
+
+/** An <a> styled like a button (navigation, downloads). */
+export function linkBtn(label, href, { variant = '', size = '', iconName = null, title, block = false, attrs = {} } = {}) {
+    const classes = ['btn', variant && `btn-${variant}`, size && `btn-${size}`, !label && 'btn-icon', block && 'btn-block'].filter(Boolean).join(' ');
+    return h('a', { class: classes, href, title: title || null, 'aria-label': !label ? title : null, ...attrs },
+        iconName ? icon(iconName, size ? 'icon-sm' : '') : null, label ? h('span', {}, label) : null);
+}
+
+export function debounce(fn, wait = 250) {
+    let timer = null;
+    return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), wait);
+    };
+}
+
+/** Search box with a leading icon; `onSearch` is debounced. */
+export function searchInput({ placeholder = 'Ara…', value = '', onSearch, wait = 200, label } = {}) {
+    const control = input({ type: 'search', placeholder, value, 'aria-label': label || placeholder, autocomplete: 'off' });
+    if (onSearch) control.addEventListener('input', debounce(() => onSearch(control.value.trim()), wait));
+    const wrap = h('div', { class: 'search-input' }, icon('search', 'icon-sm'), control);
+    wrap.control = control;
+    return wrap;
+}
+
+/** "1-50 / 230" + previous/next buttons. */
+export function pager({ offset = 0, limit = 50, count = 0, total = null, onChange }) {
+    const from = count ? offset + 1 : 0;
+    const to = offset + count;
+    const hasMore = total !== null ? to < total : count >= limit;
+    return h('div', { class: 'table-foot' },
+        h('span', {}, total !== null ? `${from}–${to} / ${total}` : (count ? `${from}–${to}` : '0 kayıt')),
+        h('div', { class: 'pager' },
+            btn('Önceki', { size: 'sm', iconName: 'arrowLeft', disabled: offset <= 0, onClick: () => onChange(Math.max(0, offset - limit)) }),
+            btn('Sonraki', { size: 'sm', iconName: 'arrowRight', disabled: !hasMore, onClick: () => onChange(offset + limit) })));
+}
+
+/** Download a protected file with fetch so errors surface as toasts instead of saved JSON. */
+export async function downloadFile(url, fallbackName = 'download') {
+    const res = await fetch(url, { credentials: 'same-origin' });
+    if (!res.ok) {
+        let message = `İndirme başarısız (HTTP ${res.status}).`;
+        try { const data = await res.json(); if (data.error) message = data.error; } catch (_) { /* not json */ }
+        if (res.status === 401) emit('session-expired');
+        throw new ApiError(message, { status: res.status });
+    }
+    const disposition = res.headers.get('content-disposition') || '';
+    const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+    const name = match ? decodeURIComponent(match[1]) : fallbackName;
+    saveBlob(await res.blob(), name);
+}
+
+export function saveBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = h('a', { href: url, download: filename, hidden: true });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+/** rows: array of objects; columns: [{ key, label, value?(row) }] */
+export function downloadCsv(filename, columns, rows) {
+    const esc = v => {
+        const s = v === null || v === undefined ? '' : String(v);
+        const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s; // neutralise spreadsheet formulas
+        return /[",\n;]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+    };
+    const lines = [columns.map(c => esc(c.label)).join(';')];
+    rows.forEach(r => lines.push(columns.map(c => esc(c.value ? c.value(r) : r[c.key])).join(';')));
+    saveBlob(new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), filename);
+}
+
+export const validators = {
+    steamId: v => /^STEAM_[0-5]:[01]:\d{1,12}$/i.test(v),
+    ip: v => /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(v),
+    domain: v => /^(?=.{3,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(v),
+    slug: v => /^[a-z0-9][a-z0-9_-]{1,31}$/.test(v)
+};
 
 /** Run an async action while showing a spinner on the button. */
 export async function withBusy(button, fn) {
-    if (button) { button.classList.add('is-loading'); button.disabled = true; }
+    const wasDisabled = button ? button.disabled : false;
+    if (button) { button.classList.add('is-loading'); button.disabled = true; button.setAttribute('aria-busy', 'true'); }
     try {
         return await fn();
     } finally {
-        if (button) { button.classList.remove('is-loading'); button.disabled = false; }
+        if (button) { button.classList.remove('is-loading'); button.disabled = wasDisabled; button.removeAttribute('aria-busy'); }
     }
 }
 
@@ -294,22 +384,83 @@ export function switchControl(label, checked, onChange) {
     return h('label', { class: 'switch' }, inputEl, h('span', { class: 'track' }), label);
 }
 
-export function table(columns, rows, { empty = 'Kayıt bulunamadı.', rowAttrs } = {}) {
-    const thead = h('thead', {}, h('tr', {}, columns.map(c => h('th', { class: c.class || '' }, c.label || ''))));
+const COLUMN_TYPE_CLASS = { num: 'num', money: 'num', date: 'date', actions: 'actions', mono: 'mono', check: 'check-col', wrap: 'wrap' };
+
+function isEmptyCell(value) {
+    return value === null || value === undefined || value === '' || value === false;
+}
+
+/**
+ * columns: [{ key, label, render?(row,i), type?: 'num'|'money'|'date'|'actions'|'mono'|'check'|'wrap',
+ *             class?, hideSm?, sort?: (row) => comparable }]
+ * options: { empty, rowAttrs(row,i), onRowClick(row), scrollY, initialSort: { key, dir } }
+ */
+export function table(columns, rows, { empty = 'Kayıt bulunamadı.', rowAttrs, onRowClick, scrollY = false, initialSort = null } = {}) {
+    const classFor = c => [COLUMN_TYPE_CLASS[c.type], c.class, c.hideSm && 'hide-sm'].filter(Boolean).join(' ');
+    let sortState = initialSort ? { ...initialSort } : null;
     const tbody = h('tbody');
-    if (!rows.length) {
-        tbody.appendChild(h('tr', {}, h('td', { colspan: columns.length, class: 'table-empty' }, empty)));
-    } else {
-        rows.forEach((row, i) => {
-            const tr = h('tr', rowAttrs ? rowAttrs(row, i) : {});
+    const headRow = h('tr');
+
+    function sortedRows() {
+        if (!sortState) return rows;
+        const col = columns.find(c => (c.key || c.label) === sortState.key);
+        if (!col || !col.sort) return rows;
+        const dir = sortState.dir === 'desc' ? -1 : 1;
+        return [...rows].sort((a, b) => {
+            const va = col.sort(a);
+            const vb = col.sort(b);
+            if (va === vb) return 0;
+            if (va === null || va === undefined) return 1;
+            if (vb === null || vb === undefined) return -1;
+            return (typeof va === 'string' ? va.localeCompare(vb, 'tr') : va - vb) * dir;
+        });
+    }
+
+    function paintHead() {
+        clear(headRow, columns.map(c => {
+            const id = c.key || c.label;
+            if (!c.sort) return h('th', { class: classFor(c), scope: 'col' }, c.label || '');
+            const active = sortState && sortState.key === id;
+            return h('th', { class: classFor(c), scope: 'col', 'aria-sort': active ? (sortState.dir === 'desc' ? 'descending' : 'ascending') : null },
+                h('button', { type: 'button', class: `sort-btn ${active ? 'active' : ''}`, onClick: () => {
+                    sortState = { key: id, dir: active && sortState.dir === 'asc' ? 'desc' : 'asc' };
+                    paintHead();
+                    paintBody();
+                } }, c.label, active ? icon(sortState.dir === 'desc' ? 'arrowDown' : 'arrowUp', 'icon-sm') : null));
+        }));
+    }
+
+    function paintBody() {
+        clear(tbody);
+        if (!rows.length) {
+            tbody.appendChild(h('tr', {}, h('td', { colspan: columns.length, class: 'table-empty' }, empty)));
+            return;
+        }
+        sortedRows().forEach((row, i) => {
+            const extra = rowAttrs ? rowAttrs(row, i) || {} : {};
+            const tr = h('tr', extra);
+            if (onRowClick) {
+                tr.classList.add('clickable');
+                tr.tabIndex = 0;
+                tr.addEventListener('click', e => { if (!e.target.closest('button, a, input, select, label, .dropdown')) onRowClick(row, e); });
+                tr.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target === tr) onRowClick(row, e); });
+            }
             columns.forEach(c => {
                 const value = c.render ? c.render(row, i) : row[c.key];
-                tr.appendChild(h('td', { class: c.class || '' }, value === null || value === undefined ? '—' : value));
+                tr.appendChild(h('td', { class: classFor(c) }, isEmptyCell(value) && c.type !== 'actions' && c.type !== 'check' ? h('span', { class: 'muted' }, '—') : value));
             });
             tbody.appendChild(tr);
         });
     }
-    return h('div', { class: 'table-wrap' }, h('table', { class: 'table' }, thead, tbody));
+
+    paintHead();
+    paintBody();
+    return h('div', { class: `table-wrap ${scrollY ? 'scroll-y' : ''}`.trim() }, h('table', { class: 'table' }, h('thead', {}, headRow), tbody));
+}
+
+/** Right-aligned row of compact action buttons for a table "actions" column. */
+export function tableActions(...items) {
+    return h('div', { class: 'table-actions' }, items);
 }
 
 export function copyButton(text, label = null) {
@@ -347,7 +498,7 @@ export function toast(message, type = 'info', duration = 4500) {
     }
     const icons = { success: 'check', error: 'alert', warning: 'alert', info: 'info' };
     const el = h('div', { class: `toast toast-${type}` }, icon(icons[type] || 'info'), h('div', { class: 'msg' }, message),
-        h('button', { type: 'button', 'aria-label': 'Kapat', onClick: () => el.remove() }, icon('x', 'icon-sm')));
+        h('button', { type: 'button', class: 'toast-close', 'aria-label': 'Kapat', onClick: () => el.remove() }, icon('x', 'icon-sm')));
     toastRoot.appendChild(el);
     if (duration) setTimeout(() => el.remove(), type === 'error' ? Math.max(duration, 7000) : duration);
     return el;
@@ -377,7 +528,7 @@ export function openModal({ title, body, footer, size = '', onClose, closeOnBack
         backdrop.remove();
         document.removeEventListener('keydown', onKey, true);
         openModals = Math.max(0, openModals - 1);
-        if (!openModals) document.body.style.overflow = '';
+        if (!openModals) document.body.classList.remove('scroll-locked');
         if (opener && opener.focus) opener.focus();
         if (onClose) onClose(result);
     }
@@ -396,7 +547,7 @@ export function openModal({ title, body, footer, size = '', onClose, closeOnBack
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(backdrop);
     openModals++;
-    document.body.style.overflow = 'hidden';
+    document.body.classList.add('scroll-locked');
     setTimeout(() => {
         const target = dialog.querySelector('[autofocus], .modal-body input:not([type=hidden]):not([readonly]), .modal-body textarea, .modal-body select') || closeBtn;
         target.focus();
@@ -409,7 +560,7 @@ export function confirmDialog({ title = 'Emin misiniz?', message, confirmText = 
         let confirmBtn;
         const guard = requireText ? input({ placeholder: requireText, autocomplete: 'off', onInput: e => { confirmBtn.disabled = e.target.value.trim() !== requireText; } }) : null;
         const body = h('div', { class: 'form-stack' },
-            h('p', { class: 'text-2', style: { whiteSpace: 'pre-line' } }, message),
+            h('p', { class: 'text-2 pre-line' }, message),
             guard ? field(`Onaylamak için "${requireText}" yazın`, guard) : null);
         confirmBtn = btn(confirmText, { variant: danger ? 'danger-solid' : 'primary', disabled: !!requireText, onClick: () => modal.close(true) });
         const modal = openModal({
@@ -436,31 +587,89 @@ export function promptDialog({ title, label, value = '', placeholder = '', confi
 }
 
 /**
- * Generic form modal. fields: [{ name, label, type, value, options, required, help, full, placeholder, min, max, step }]
+ * Generic form modal.
+ * fields: [{ name, label, type, value, options, required, help, full, placeholder, min, max, step,
+ *            pattern, maxlength, code, rows, checkLabel, showIf?(values), validate?(value, values) => message|null }]
+ * type 'chips': multi-select toggle chips — options [{ value, label }], value = array.
  * `onSubmit(values)` may throw; the error is shown inline and the modal stays open.
  */
-export function formDialog({ title, fields, submitText = 'Kaydet', onSubmit, size = '', intro }) {
+export function formDialog({ title, fields, submitText = 'Kaydet', onSubmit, size = '', intro, danger = false }) {
     return new Promise(resolve => {
         const controls = {};
-        const errorEl = h('div', { class: 'form-error', hidden: true });
+        const wrappers = {};
+        const errorEl = h('div', { class: 'form-error', role: 'alert', hidden: true });
         const grid = h('div', { class: 'form-grid' });
+
+        const readValues = () => {
+            const values = {};
+            for (const [name, control] of Object.entries(controls)) {
+                if (control.chipValues) values[name] = [...control.chipValues];
+                else values[name] = control.type === 'checkbox' ? control.checked : control.value;
+            }
+            return values;
+        };
+        const refreshVisibility = () => {
+            const values = readValues();
+            fields.forEach(f => { if (f.showIf) wrappers[f.name].hidden = !f.showIf(values); });
+        };
+
         fields.forEach(f => {
             let control;
             if (f.type === 'select') control = select(f.options || [], { name: f.name, value: f.value ?? '' });
-            else if (f.type === 'textarea') control = h('textarea', { class: `textarea ${f.code ? 'code' : ''}`, name: f.name, value: f.value ?? '', rows: f.rows || 4, placeholder: f.placeholder || '' });
+            else if (f.type === 'textarea') control = h('textarea', { class: `textarea ${f.code ? 'code' : ''}`, name: f.name, value: f.value ?? '', rows: f.rows || 4, placeholder: f.placeholder || '', maxlength: f.maxlength });
             else if (f.type === 'checkbox') control = h('label', { class: 'check' }, h('input', { type: 'checkbox', name: f.name, checked: !!f.value }), f.checkLabel || f.label);
-            else control = input({ type: f.type || 'text', name: f.name, value: f.value ?? '', placeholder: f.placeholder || '', min: f.min, max: f.max, step: f.step, required: f.required, autocomplete: 'off' });
+            else if (f.type === 'chips') {
+                const chosen = new Set((f.value || []).map(String));
+                control = h('div', { class: 'chips', role: 'group', 'aria-label': f.label });
+                control.chipValues = chosen;
+                (f.options || []).forEach(o => {
+                    const chip = h('button', { type: 'button', class: 'chip', 'aria-pressed': chosen.has(String(o.value)) ? 'true' : 'false', onClick: () => {
+                        const v = String(o.value);
+                        if (chosen.has(v)) chosen.delete(v); else chosen.add(v);
+                        chip.setAttribute('aria-pressed', chosen.has(v) ? 'true' : 'false');
+                        refreshVisibility();
+                    } }, o.label);
+                    control.appendChild(chip);
+                });
+            } else control = input({ type: f.type || 'text', name: f.name, value: f.value ?? '', placeholder: f.placeholder || '', min: f.min, max: f.max, step: f.step, required: f.required, pattern: f.pattern, maxlength: f.maxlength, autocomplete: 'off', class: f.code ? 'code' : '' });
             controls[f.name] = f.type === 'checkbox' ? control.querySelector('input') : control;
-            const wrapper = field(f.type === 'checkbox' ? null : f.label, control, { help: f.help, id: `fd-${f.name}` });
-            if (f.full || f.type === 'textarea') wrapper.classList.add('full');
+            const wrapper = field(f.type === 'checkbox' ? null : f.label, control, { help: f.help, id: f.type === 'chips' ? null : `fd-${f.name}` });
+            if (f.full || f.type === 'textarea' || f.type === 'chips') wrapper.classList.add('full');
+            wrappers[f.name] = wrapper;
             grid.appendChild(wrapper);
+            if (f.type !== 'chips') controls[f.name].addEventListener(f.type === 'select' || f.type === 'checkbox' ? 'change' : 'input', () => {
+                wrapper.classList.remove('invalid');
+                const err = wrapper.querySelector('.field-error');
+                if (err) err.remove();
+                refreshVisibility();
+            });
         });
-        const submitBtn = btn(submitText, { variant: 'primary', type: 'submit' });
-        const form = h('form', { class: 'form-stack', onSubmit: async e => {
+        refreshVisibility();
+
+        const submitBtn = btn(submitText, { variant: danger ? 'danger-solid' : 'primary', onClick: () => form.requestSubmit() });
+        const form = h('form', { class: 'form-stack', novalidate: true, onSubmit: async e => {
             e.preventDefault();
-            const values = {};
-            for (const [name, control] of Object.entries(controls)) values[name] = control.type === 'checkbox' ? control.checked : control.value;
+            const values = readValues();
             errorEl.hidden = true;
+            let firstInvalid = null;
+            fields.forEach(f => {
+                const wrapper = wrappers[f.name];
+                wrapper.classList.remove('invalid');
+                const old = wrapper.querySelector('.field-error');
+                if (old) old.remove();
+                if (wrapper.hidden) return;
+                const value = values[f.name];
+                let message = null;
+                if (f.required && (value === '' || value === null || (Array.isArray(value) && !value.length))) message = 'Bu alan zorunlu.';
+                else if (f.validate && value !== '' && value !== null) message = f.validate(value, values) || null;
+                else if (controls[f.name].validity && !controls[f.name].validity.valid) message = controls[f.name].validationMessage;
+                if (message) {
+                    wrapper.classList.add('invalid');
+                    wrapper.appendChild(h('div', { class: 'field-error' }, message));
+                    if (!firstInvalid) firstInvalid = controls[f.name];
+                }
+            });
+            if (firstInvalid) { if (firstInvalid.focus) firstInvalid.focus(); return; }
             try {
                 const result = onSubmit ? await withBusy(submitBtn, () => onSubmit(values)) : values;
                 modal.close({ ok: true, result: result === undefined ? values : result });
@@ -468,42 +677,114 @@ export function formDialog({ title, fields, submitText = 'Kaydet', onSubmit, siz
                 errorEl.textContent = error.message;
                 errorEl.hidden = false;
             }
-        } }, intro ? h('p', { class: 'text-2' }, intro) : null, errorEl, grid);
+        } }, intro ? h('p', { class: 'text-2' }, intro) : null, errorEl, grid,
+        // Hidden submit so Enter inside an input submits the form.
+        h('button', { type: 'submit', hidden: true, tabindex: '-1', 'aria-hidden': 'true' }));
         const modal = openModal({
             title, size,
             body: form,
-            footer: [btn('Vazgeç', { variant: 'ghost', onClick: () => modal.close(null) }), h('button', { class: 'btn btn-primary', type: 'button', onClick: () => form.requestSubmit() }, submitText)],
+            footer: [btn('Vazgeç', { variant: 'ghost', onClick: () => modal.close(null) }), submitBtn],
             onClose: result => resolve(result && result.ok ? result.result : null)
         });
     });
 }
 
-/** Attach a click-toggled dropdown menu to a trigger button. */
+/**
+ * Click-toggled dropdown menu. The menu is rendered in a fixed layer on
+ * <body> so table wrappers (overflow: auto) never clip it, and it flips
+ * above the trigger / to the other side when it would leave the viewport.
+ */
+let closeOpenDropdown = null;
 export function dropdown(trigger, buildMenu, { align = 'right', className = '' } = {}) {
     const wrapper = h('div', { class: 'dropdown' }, trigger);
     let menu = null;
-    function closeMenu() {
+
+    function position() {
+        if (!menu) return;
+        const r = trigger.getBoundingClientRect();
+        const m = menu.getBoundingClientRect();
+        const vw = document.documentElement.clientWidth;
+        const vh = window.innerHeight;
+        const gap = 6;
+        let left = align === 'left' ? r.left : r.right - m.width;
+        left = Math.max(8, Math.min(left, vw - m.width - 8));
+        let top = r.bottom + gap;
+        if (top + m.height > vh - 8 && r.top - gap - m.height > 8) top = r.top - gap - m.height;
+        top = Math.max(8, Math.min(top, vh - m.height - 8));
+        menu.style.left = `${Math.round(left)}px`;
+        menu.style.top = `${Math.round(top)}px`;
+    }
+    function items() { return menu ? [...menu.querySelectorAll('[role=menuitem]:not(:disabled)')] : []; }
+    function closeMenu({ focusTrigger = false } = {}) {
         if (menu) { menu.remove(); menu = null; }
+        trigger.setAttribute('aria-expanded', 'false');
         document.removeEventListener('mousedown', outside, true);
         document.removeEventListener('keydown', onKey, true);
+        window.removeEventListener('resize', onViewportChange);
+        window.removeEventListener('scroll', onViewportChange, true);
+        if (closeOpenDropdown === closeMenu) closeOpenDropdown = null;
+        if (focusTrigger) trigger.focus();
     }
-    function outside(e) { if (!wrapper.contains(e.target)) closeMenu(); }
-    function onKey(e) { if (e.key === 'Escape') { closeMenu(); trigger.focus(); } }
+    function outside(e) { if (!wrapper.contains(e.target) && !(menu && menu.contains(e.target))) closeMenu(); }
+    function onViewportChange(e) {
+        if (!menu) return;
+        if (e && e.type === 'scroll') {
+            if (menu.contains(e.target)) return;
+            // Follow the trigger while the page scrolls; close once it leaves the screen.
+            const r = trigger.getBoundingClientRect();
+            if (r.bottom < 0 || r.top > window.innerHeight) closeMenu();
+            else position();
+            return;
+        }
+        closeMenu();
+    }
+    function onKey(e) {
+        if (e.key === 'Escape') { e.preventDefault(); closeMenu({ focusTrigger: true }); return; }
+        if (e.key === 'Tab') { closeMenu(); return; }
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            const list = items();
+            if (!list.length) return;
+            e.preventDefault();
+            const index = list.indexOf(document.activeElement);
+            const next = e.key === 'ArrowDown' ? (index + 1) % list.length : (index <= 0 ? list.length - 1 : index - 1);
+            list[next].focus();
+        }
+    }
     trigger.setAttribute('aria-haspopup', 'menu');
+    trigger.setAttribute('aria-expanded', 'false');
     trigger.addEventListener('click', e => {
         e.stopPropagation();
         if (menu) return closeMenu();
-        menu = h('div', { class: `dropdown-menu ${className}`.trim(), role: 'menu', style: align === 'left' ? { left: '0', right: 'auto' } : {} });
+        if (closeOpenDropdown) closeOpenDropdown();
+        menu = h('div', { class: `dropdown-menu ${className}`.trim(), role: 'menu' });
         append(menu, [buildMenu(closeMenu)]);
-        wrapper.appendChild(menu);
+        menu.style.visibility = 'hidden';
+        document.body.appendChild(menu);
+        position();
+        menu.style.visibility = '';
+        trigger.setAttribute('aria-expanded', 'true');
+        closeOpenDropdown = closeMenu;
         document.addEventListener('mousedown', outside, true);
         document.addEventListener('keydown', onKey, true);
+        window.addEventListener('resize', onViewportChange);
+        window.addEventListener('scroll', onViewportChange, true);
+        if (e.detail === 0) { const first = items()[0]; if (first) first.focus(); } // keyboard open
     });
+    wrapper.reposition = position;
     return wrapper;
 }
 
-export function menuItem(label, onClick, { iconName, danger = false } = {}) {
-    return h('button', { type: 'button', role: 'menuitem', class: danger ? 'danger' : '', onClick }, iconName ? icon(iconName, 'icon-sm') : null, label);
+export function menuItem(label, onClick, { iconName, danger = false, disabled = false } = {}) {
+    return h('button', { type: 'button', role: 'menuitem', class: danger ? 'danger' : '', onClick, disabled }, iconName ? icon(iconName, 'icon-sm') : null, h('span', {}, label));
+}
+
+export function menuSep() {
+    return h('div', { class: 'sep', role: 'separator' });
+}
+
+/** "⋯" button opening a menu of actions; for table rows and card heads. */
+export function moreMenu(buildItems, { title = 'Diğer işlemler', size = 'xs' } = {}) {
+    return dropdown(btn(null, { size, variant: 'ghost', iconName: 'more', title }), close => buildItems(close));
 }
 
 // ---------------------------------------------------------------------------

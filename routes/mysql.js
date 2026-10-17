@@ -225,7 +225,7 @@ router.delete('/users', async (req, res) => {
         const host = (req.body && req.body.host) || '%';
         if (!username || !/^[a-zA-Z0-9_.-]{1,32}$/.test(username)) throw httpError(400, 'Geçersiz kullanıcı adı');
         if (!HOST_RE.test(host)) throw httpError(400, 'Geçersiz host');
-        if (['root', 'mysql.sys', 'mysql.session', 'mysql.infoschema'].includes(username)) throw httpError(403, 'Sistem kullanıcısı silinemez');
+        if (['root', 'mysql', 'mysql.sys', 'mysql.session', 'mysql.infoschema', 'mariadb.sys', 'debian-sys-maint'].includes(username)) throw httpError(403, 'Sistem kullanıcısı silinemez');
         await withConnection(() => rootConnection(), async conn => {
             await conn.query('DROP USER IF EXISTS ?@?', [username, host]);
             await conn.query('FLUSH PRIVILEGES');

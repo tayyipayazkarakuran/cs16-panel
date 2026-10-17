@@ -41,9 +41,9 @@ export async function render({ root, setTitle }) {
     async function loadNotifications() {
         try {
             const data = await api('/api/account/notifications?limit=50');
-            clear(notifBox, data.notifications.length ? data.notifications.map(n => h('div', { class: `notif-item ${n.read_at ? '' : 'unread'}`, style: { cursor: n.link ? 'pointer' : 'default' }, onClick: () => { if (n.link && n.link.startsWith('#/')) window.location.hash = n.link; } },
+            clear(notifBox, data.notifications.length ? data.notifications.map(n => h(n.link ? 'button' : 'div', { type: n.link ? 'button' : null, class: `notif-item ${n.read_at ? '' : 'unread'}`, onClick: () => { if (n.link && n.link.startsWith('#/')) window.location.hash = n.link; } },
                 h('span', { class: `dot dot-${{ success: 'online', warning: 'starting', danger: 'offline' }[n.type] || 'suspended'}` }),
-                h('div', { style: { flex: '1', minWidth: '0' } }, h('strong', {}, n.title), n.body ? h('p', {}, n.body) : null, h('time', {}, fmtRelative(n.created_at)))))
+                h('div', { class: 'body' }, h('strong', {}, n.title), n.body ? h('p', {}, n.body) : null, h('time', {}, fmtRelative(n.created_at)))))
                 : h('div', { class: 'table-empty' }, 'Bildiriminiz yok.'));
         } catch (error) { clear(notifBox, h('div', { class: 'table-empty' }, error.message)); }
     }

@@ -119,7 +119,7 @@ router.post('/auth/forgot-password', resetLimiter, async (req, res) => {
                     type: 'warning',
                     title: 'Şifre sıfırlama talebi',
                     body: `"${rows[0].username}" kullanıcısı şifre sıfırlama talep etti. Kullanıcılar sayfasından sıfırlama bağlantısı oluşturabilirsiniz.`,
-                    link: `#/admin/users?u=${rows[0].id}`
+                    link: `#/admin/users/${rows[0].id}`
                 });
                 await panelDb.logAudit({ actorId: rows[0].id, actorName: rows[0].username, action: 'auth.forgot_password', targetType: 'user', targetId: rows[0].id, ip: security.clientIp(req) });
             }

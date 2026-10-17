@@ -68,7 +68,8 @@ function create({ root = process.env.MOCK_DOCKER_ROOT || path.join(os.tmpdir(), 
                 return {
                     Id: c.Id,
                     Name: `/${c.name}`,
-                    State: { Running: c.state === 'running', Status: c.state },
+                    State: { Running: c.state === 'running', Status: c.state, StartedAt: new Date(c.startedAt || Date.now()).toISOString() },
+                    RestartCount: 0,
                     Config: { Env: c.env, Image: c.image, ExposedPorts: {} },
                     HostConfig: { PortBindings: { [`${c.port}/udp`]: [{ HostPort: String(c.port) }] }, Binds: [] },
                     NetworkSettings: { IPAddress: '127.0.0.1', Networks: { 'cs-network': { IPAddress: '127.0.0.1' } } }
@@ -85,6 +86,19 @@ function create({ root = process.env.MOCK_DOCKER_ROOT || path.join(os.tmpdir(), 
             },
             async restart() { c.state = 'running'; c.startedAt = Date.now(); },
             async remove() { containers.delete(c.Id); },
+            async stats() {
+                // Synthetic but realistic numbers so the resource UI can be exercised.
+                c.cpuTotal = (c.cpuTotal || 1e9) + 4e7 + Math.round(Math.random() * 3e7);
+                c.sysTotal = (c.sysTotal || 1e11) + 1e9;
+                c.rx = (c.rx || 0) + 20000 + Math.round(Math.random() * 40000);
+                c.tx = (c.tx || 0) + 60000 + Math.round(Math.random() * 90000);
+                return {
+                    cpu_stats: { cpu_usage: { total_usage: c.cpuTotal }, system_cpu_usage: c.sysTotal, online_cpus: 4 },
+                    precpu_stats: { cpu_usage: { total_usage: c.cpuTotal - 4e7 }, system_cpu_usage: c.sysTotal - 1e9 },
+                    memory_stats: { usage: 180e6 + Math.round(Math.random() * 20e6), limit: 8e9, stats: { inactive_file: 30e6 } },
+                    networks: { eth0: { rx_bytes: c.rx, tx_bytes: c.tx } }
+                };
+            },
             async wait() { return { StatusCode: 0 }; },
             logs(opts, cb) {
                 const lines = `ReHLDS version: 3.13\nExecuting server.cfg\nPort ${c.port} ready, map ${envMap(c.env).START_MAP || 'de_dust2'}\n`;

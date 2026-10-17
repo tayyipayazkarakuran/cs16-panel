@@ -1,4 +1,4 @@
-import { append, state, api, h, clear, icon, btn, field, input, withBusy, passwordScore, navigate } from '../core.js';
+import { append, state, api, h, clear, icon, btn, linkBtn, field, input, withBusy, passwordScore, navigate } from '../core.js';
 
 function passwordField(id, label, { autocomplete = 'current-password', meter = false } = {}) {
     const control = input({ id, type: 'password', autocomplete, required: true, minlength: meter ? 8 : null });
@@ -57,7 +57,7 @@ export function renderAuth(root, mode, { query, onAuthenticated }) {
         const msg = messageBox();
         const user = input({ id: 'login-username', autocomplete: 'username', required: true, autofocus: true, placeholder: 'kullaniciadi veya e-posta' });
         const pw = passwordField('login-password', 'Şifre');
-        const submit = btn('Giriş yap', { variant: 'primary', type: 'submit', attrs: { class: 'btn btn-primary btn-block' } });
+        const submit = btn('Giriş yap', { variant: 'primary', type: 'submit', block: true });
         const form = h('form', { class: 'form-stack', onSubmit: async e => {
             e.preventDefault();
             msg.clear();
@@ -88,7 +88,7 @@ export function renderAuth(root, mode, { query, onAuthenticated }) {
 
     if (mode === 'register') {
         if (config.registrationEnabled === false) {
-            append(panel, h('h1', {}, 'Üyelik kapalı'), h('p', { class: 'lead' }, 'Yeni üyelik alımı geçici olarak durduruldu.'), h('a', { class: 'btn btn-primary', href: '#/login' }, 'Girişe dön'));
+            append(panel, h('h1', {}, 'Üyelik kapalı'), h('p', { class: 'lead' }, 'Yeni üyelik alımı geçici olarak durduruldu.'), linkBtn('Girişe dön', '#/login', { variant: 'primary' }));
             return;
         }
         const msg = messageBox();
@@ -97,7 +97,7 @@ export function renderAuth(root, mode, { query, onAuthenticated }) {
         const pw = passwordField('reg-password', 'Şifre', { autocomplete: 'new-password', meter: true });
         const confirmPw = passwordField('reg-password2', 'Şifre (tekrar)', { autocomplete: 'new-password' });
         const terms = h('input', { type: 'checkbox', id: 'reg-terms', required: true });
-        const submit = btn('Hesap oluştur', { variant: 'primary', type: 'submit', attrs: { class: 'btn btn-primary btn-block' } });
+        const submit = btn('Hesap oluştur', { variant: 'primary', type: 'submit', block: true });
         const form = h('form', { class: 'form-stack', onSubmit: async e => {
             e.preventDefault();
             msg.clear();
@@ -134,7 +134,7 @@ export function renderAuth(root, mode, { query, onAuthenticated }) {
     if (mode === 'forgot') {
         const msg = messageBox();
         const login = input({ id: 'forgot-login', required: true, autocomplete: 'username', placeholder: 'kullaniciadi veya e-posta' });
-        const submit = btn('Sıfırlama talebi gönder', { variant: 'primary', type: 'submit', attrs: { class: 'btn btn-primary btn-block' } });
+        const submit = btn('Sıfırlama talebi gönder', { variant: 'primary', type: 'submit', block: true });
         const form = h('form', { class: 'form-stack', onSubmit: async e => {
             e.preventDefault();
             await withBusy(submit, async () => {
@@ -159,7 +159,7 @@ export function renderAuth(root, mode, { query, onAuthenticated }) {
     const msg = messageBox();
     const pw = passwordField('reset-password', 'Yeni şifre', { autocomplete: 'new-password', meter: true });
     const confirmPw = passwordField('reset-password2', 'Yeni şifre (tekrar)', { autocomplete: 'new-password' });
-    const submit = btn('Şifreyi güncelle', { variant: 'primary', type: 'submit', attrs: { class: 'btn btn-primary btn-block' } });
+    const submit = btn('Şifreyi güncelle', { variant: 'primary', type: 'submit', block: true });
     const form = h('form', { class: 'form-stack', onSubmit: async e => {
         e.preventDefault();
         if (pw.control.value !== confirmPw.control.value) return msg.error('Şifreler eşleşmiyor.');

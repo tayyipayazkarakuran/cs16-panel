@@ -1,4 +1,4 @@
-import { append, state, h, icon, card, fmtMoney, fmtDate, daysLeft, statusBadge, emptyState, on, clear, copyButton } from '../core.js';
+import { append, state, h, icon, linkBtn, card, fmtMoney, fmtDate, daysLeft, statusBadge, emptyState, on, clear, copyButton } from '../core.js';
 import { loadServers } from '../main.js';
 
 function statTile(label, value, iconName, meta) {
@@ -15,7 +15,7 @@ export function serverCard(s) {
         : h('span', { class: left <= 3 ? 'text-warning' : '' }, left > 3650 ? 'Süresiz' : `${left} gün kaldı`);
     return h('a', { class: 'card server-card', href: `#/servers/${s.id}` },
         h('div', { class: 'top' },
-            h('div', { style: { minWidth: '0' } }, h('h3', {}, s.name), h('div', { class: 'addr' }, s.address)),
+            h('div', {}, h('h3', {}, s.name), h('div', { class: 'addr' }, s.address)),
             statusBadge(s)),
         h('div', { class: 'figures' },
             h('div', {}, h('span', {}, 'Oyuncu'), h('strong', {}, s.online ? `${s.players}/${s.maxPlayers}` : `0/${s.maxPlayers}`)),
@@ -45,23 +45,23 @@ export async function render({ root, setTitle, onCleanup }) {
 
         const suspended = mine.filter(s => s.suspended);
         clear(serversBox,
-            suspended.length ? h('div', { class: 'alert alert-danger', style: { marginBottom: '16px' } }, icon('alert'),
+            suspended.length ? h('div', { class: 'alert alert-danger mb-4' }, icon('alert'),
                 h('div', {}, h('strong', {}, `${suspended.length} sunucunuz askıda`), h('p', {}, 'Süresi dolan sunucular durduruldu. Askı süresi içinde yenilemezseniz dosyalar silinir.')),
-                h('div', { class: 'alert-actions' }, h('a', { class: 'btn btn-sm btn-primary', href: `#/servers/${suspended[0].id}` }, 'Hemen yenile'))) : null,
+                h('div', { class: 'alert-actions' }, linkBtn('Hemen yenile', `#/servers/${suspended[0].id}`, { size: 'sm', variant: 'primary' }))) : null,
             mine.length
                 ? h('div', { class: 'server-cards' }, mine.map(serverCard))
                 : card({ body: emptyState({
                     iconName: 'server',
                     title: 'Henüz bir sunucunuz yok',
                     text: 'Paketinizi seçin, birkaç saniyede kiralayın. Sunucunuz FastDL, MySQL veritabanı ve PHP web sitesiyle birlikte hazır gelir.',
-                    action: h('a', { class: 'btn btn-primary', href: '#/rent' }, icon('cart'), 'Sunucu kirala')
+                    action: linkBtn('Sunucu kirala', '#/rent', { variant: 'primary', iconName: 'cart' })
                 }) }));
     }
 
     append(root, 
         h('div', { class: 'page-head' },
             h('div', {}, h('h1', {}, `Merhaba, ${user.username}`), h('p', { class: 'lead' }, 'Sunucularınızın anlık durumu ve hesabınızın özeti.')),
-            h('div', { class: 'btn-group' }, h('a', { class: 'btn', href: '#/billing' }, icon('wallet'), 'Bakiye yükle'), h('a', { class: 'btn btn-primary', href: '#/rent' }, icon('plus'), 'Yeni sunucu'))),
+            h('div', { class: 'btn-group' }, linkBtn('Bakiye yükle', '#/billing', { iconName: 'wallet' }), linkBtn('Yeni sunucu', '#/rent', { variant: 'primary', iconName: 'plus' }))),
         stats,
         h('div', { class: 'stack' }, h('div', { class: 'row' }, h('h2', {}, 'Sunucularım'), h('span', { class: 'spacer' }),
             state.config && state.config.gameHost ? h('span', { class: 'small muted' }, `Sunucu adresi: ${state.config.gameHost}`, copyButton(state.config.gameHost)) : null), serversBox));

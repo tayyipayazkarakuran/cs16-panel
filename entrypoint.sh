@@ -134,6 +134,34 @@ if [ -f "/hlds/cstrike/startup_map.txt" ]; then
     fi
 fi
 
+# Launch options managed by the panel (Ayarlar > Başlatma parametreleri).
+# Only whitelisted KEY=VALUE pairs with strictly validated values are read;
+# anything else in the file is ignored, so it can never inject arguments.
+PINGBOOST=2
+SYS_TICRATE=1000
+FPS_MAX=1000
+INSECURE=0
+NOMASTER=0
+STARTUP_FILE=/hlds/cstrike/panel_startup.cfg
+if [ -f "$STARTUP_FILE" ]; then
+    while IFS='=' read -r key value; do
+        value=$(printf '%s' "$value" | tr -d '\r[:space:]')
+        case "$key" in
+            PINGBOOST) case "$value" in 0|1|2|3) PINGBOOST="$value" ;; esac ;;
+            SYS_TICRATE) if printf '%s' "$value" | grep -Eq '^[0-9]{3,4}$' && [ "$value" -ge 100 ] && [ "$value" -le 1000 ]; then SYS_TICRATE="$value"; fi ;;
+            FPS_MAX) if printf '%s' "$value" | grep -Eq '^[0-9]{3,4}$' && [ "$value" -ge 100 ] && [ "$value" -le 1000 ]; then FPS_MAX="$value"; fi ;;
+            INSECURE) case "$value" in 0|1) INSECURE="$value" ;; esac ;;
+            NOMASTER) case "$value" in 0|1) NOMASTER="$value" ;; esac ;;
+        esac
+    done < "$STARTUP_FILE"
+fi
+
+set -- -game cstrike -console
+if [ "$PINGBOOST" != "0" ]; then set -- "$@" -pingboost "$PINGBOOST"; fi
+if [ "$INSECURE" = "1" ]; then set -- "$@" -insecure; fi
+if [ "$NOMASTER" = "1" ]; then set -- "$@" -nomaster; fi
+set -- "$@" +port "$PORT" +maxplayers "$MAXPLAYERS" +map "$START_MAP" +sys_ticrate "$SYS_TICRATE" +fps_max "$FPS_MAX"
+
 cd /hlds
-# Run hlds_run with -pingboost 2 and +sys_ticrate 1000 for stable 1000 FPS timing on Linux hosts
-exec ./hlds_run -game cstrike -console -pingboost 2 +port "$PORT" +maxplayers "$MAXPLAYERS" +map "$START_MAP" +sys_ticrate 1000 +fps_max 1000
+echo "Launching hlds_run $*"
+exec ./hlds_run "$@"

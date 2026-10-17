@@ -50,6 +50,21 @@
         });
     }
 
+    function checkIcon() {
+        var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('class', 'icon icon-sm');
+        svg.setAttribute('aria-hidden', 'true');
+        var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', 'M20 6 9 17l-5-5');
+        svg.appendChild(path);
+        return svg;
+    }
+
+    function feature(text) {
+        return el('li', {}, [checkIcon(), el('span', { text: text })]);
+    }
+
     function loadConfig() {
         fetch('/api/public/config').then(function (r) { return r.json(); }).then(function (cfg) {
             document.querySelectorAll('[data-site-name]').forEach(function (n) { n.textContent = cfg.siteName; });
@@ -61,8 +76,8 @@
                 var card = el('div', { class: 'card plan' + (p.highlighted ? ' highlight' : ''), 'data-ribbon': 'EN POPÜLER' }, [
                     el('div', {}, [el('h3', { text: p.name }), p.description ? el('p', { class: 'small muted', text: p.description }) : null]),
                     el('div', { class: 'price' }, [p.price > 0 ? money(p.price, cfg.currency) : 'Ücretsiz', el('small', { text: ' / ' + p.duration_days + ' gün' })]),
-                    el('ul', {}, [el('li', { text: '✓ ' + p.max_players + ' oyuncu slotu' })].concat((p.features || []).map(function (f) { return el('li', { text: '✓ ' + f }); }))),
-                    el('a', { class: 'btn ' + (p.highlighted ? 'btn-primary' : ''), href: '/#/register', text: p.is_trial ? 'Ücretsiz dene' : 'Kirala' })
+                    el('ul', {}, [feature(p.max_players + ' oyuncu slotu')].concat((p.features || []).map(feature))),
+                    el('a', { class: 'btn btn-block' + (p.highlighted ? ' btn-primary' : ''), href: '/#/register', text: p.is_trial ? 'Ücretsiz dene' : 'Kirala' })
                 ]);
                 box.appendChild(card);
             });
