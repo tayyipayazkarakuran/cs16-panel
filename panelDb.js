@@ -543,6 +543,97 @@ const MIGRATIONS = [
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             `);
         }
+    },
+    {
+        version: 6,
+        name: 'rental periods, refunds, withdrawals, receipts',
+        async up() {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS panel_rental_periods (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    server_id INT NULL,
+                    user_id INT NOT NULL,
+                    port INT NOT NULL,
+                    transaction_id BIGINT NULL,
+                    kind VARCHAR(16) NOT NULL,
+                    plan_slug VARCHAR(32) NOT NULL,
+                    plan_name VARCHAR(64) NOT NULL,
+                    months INT NOT NULL DEFAULT 1,
+                    days INT NOT NULL,
+                    starts_at DATETIME NOT NULL,
+                    ends_at DATETIME NOT NULL,
+                    subtotal DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    period_discount DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    coupon_discount DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    coupon_code VARCHAR(32) NULL,
+                    amount_paid DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    refunded_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    status VARCHAR(20) NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_periods_server (server_id, ends_at),
+                    INDEX idx_periods_user (user_id),
+                    CONSTRAINT fk_periods_server FOREIGN KEY (server_id) REFERENCES panel_servers(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_periods_user FOREIGN KEY (user_id) REFERENCES panel_users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            `);
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS panel_refund_requests (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    server_id INT NULL,
+                    port INT NULL,
+                    reason VARCHAR(500) NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                    quoted_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    approved_amount DECIMAL(10,2) NULL,
+                    server_action VARCHAR(16) NULL,
+                    admin_note VARCHAR(255) NULL,
+                    reviewed_by INT NULL,
+                    reviewed_at DATETIME NULL,
+                    transaction_id BIGINT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_refunds_status (status, created_at),
+                    CONSTRAINT fk_refunds_user FOREIGN KEY (user_id) REFERENCES panel_users(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_refunds_server FOREIGN KEY (server_id) REFERENCES panel_servers(id) ON DELETE SET NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            `);
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS panel_withdrawals (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    amount DECIMAL(10,2) NOT NULL,
+                    iban VARCHAR(34) NOT NULL,
+                    account_holder VARCHAR(100) NOT NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                    admin_note VARCHAR(255) NULL,
+                    payout_reference VARCHAR(100) NULL,
+                    reviewed_by INT NULL,
+                    reviewed_at DATETIME NULL,
+                    hold_transaction_id BIGINT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_withdrawals_status (status, created_at),
+                    CONSTRAINT fk_withdrawals_user FOREIGN KEY (user_id) REFERENCES panel_users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            `);
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS panel_receipts (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    number VARCHAR(40) NOT NULL UNIQUE,
+                    user_id INT NOT NULL,
+                    transaction_id BIGINT NOT NULL UNIQUE,
+                    type VARCHAR(24) NOT NULL,
+                    amount DECIMAL(10,2) NOT NULL,
+                    line_items TEXT NOT NULL,
+                    buyer TEXT NOT NULL,
+                    seller TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_receipts_user (user_id, created_at),
+                    CONSTRAINT fk_receipts_user FOREIGN KEY (user_id) REFERENCES panel_users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            `);
+            await addColumnIfMissing('panel_payments', 'intent', 'TEXT NULL');
+            await addColumnIfMissing('panel_servers', 'deletion_notice_stage', 'TINYINT NOT NULL DEFAULT 0');
+        }
     }
 ];
 
@@ -569,7 +660,14 @@ const DEFAULT_SETTINGS = [
     ['maintenance_mode', '0', 'Bakım Modu', 'select', 'Açıkken yalnızca yöneticiler panele erişebilir. (1 = açık)', '0,1'],
     ['maintenance_message', 'Planlı bakım çalışması yapılıyor. Kısa süre içinde tekrar hizmetinizdeyiz.', 'Bakım Mesajı', 'textarea', 'Bakım modunda kullanıcılara gösterilen metin.', null],
     ['support_contact', 'destek@example.com', 'Destek İletişim', 'text', 'Kullanıcılara gösterilen destek e-postası veya Discord bağlantısı.', null],
-    ['pool_ports', '27015-27024', 'Havuz Portları', 'text', 'Kiralamaya hazır tutulacak oyun sunucusu portları (örn. 27015-27024,27030).', null]
+    ['pool_ports', '27015-27024', 'Havuz Portları', 'text', 'Kiralamaya hazır tutulacak oyun sunucusu portları (örn. 27015-27024,27030).', null],
+    ['refund_enabled', '1', 'İade Talepleri', 'select', 'Müşteriler kalan süre için iade talep edebilsin mi? (1 = açık, 0 = kapalı)', '1,0'],
+    ['refund_fee_percent', '0', 'İade Kesintisi (%)', 'number', 'Oranlı iade tutarından düşülecek işlem kesintisi yüzdesi.', null],
+    ['refund_min_amount', '1', 'Minimum İade Tutarı', 'number', 'Bu tutarın altındaki iadeler talep edilemez.', null],
+    ['withdrawal_enabled', '1', 'Bakiye Çekme', 'select', 'Müşteriler bakiyelerini IBAN\'a çekme talebi açabilsin mi? (1 = açık, 0 = kapalı)', '1,0'],
+    ['withdrawal_min_amount', '50', 'Minimum Çekim Tutarı', 'number', 'Tek bir para çekme talebinde kabul edilen en düşük tutar.', null],
+    ['receipt_prefix', 'MKB', 'Makbuz Ön Eki', 'text', 'Makbuz numaralarının başına eklenen kısaltma (örn. MKB-2026-000001).', null],
+    ['seller_info', '', 'Satıcı Bilgisi', 'textarea', 'Makbuzların üst kısmında görünen firma, vergi dairesi / no ve adres bilgisi (her biri ayrı satırda).', null]
 ];
 
 async function seedSettings() {
@@ -994,7 +1092,7 @@ async function upsertServerRecord(data) {
 const UPDATABLE_SERVER_FIELDS = new Set([
     'container_id', 'owner_id', 'name', 'plan_type', 'expires_at', 'db_name', 'db_username', 'db_password',
     'php_path', 'php_url', 'fastdl_path', 'sv_downloadurl', 'rcon_password', 'suspended', 'suspended_reason',
-    'is_pool', 'auto_renew', 'rented_at', 'last_renewed_at', 'expiry_notice_stage', 'php_domain'
+    'is_pool', 'auto_renew', 'rented_at', 'last_renewed_at', 'expiry_notice_stage', 'php_domain', 'deletion_notice_stage'
 ]);
 
 async function updateServerContainer(containerId, fields) {
@@ -1188,7 +1286,7 @@ async function canAccessDatabase(user, database) {
  * The only function that changes a balance. It must run inside the caller's
  * transaction; the user row is locked so concurrent purchases cannot overdraw.
  */
-async function adjustBalance(conn, userId, delta, { type, description = null, referenceType = null, referenceId = null, actorId = null, allowNegative = false } = {}) {
+async function recordBalanceChange(conn, userId, delta, { type, description = null, referenceType = null, referenceId = null, actorId = null, allowNegative = false } = {}) {
     const amount = money(delta);
     const [users] = await conn.query('SELECT balance FROM panel_users WHERE id = ? FOR UPDATE', [userId]);
     if (!users[0]) throw httpError(404, 'Kullanıcı bulunamadı.');
@@ -1197,13 +1295,149 @@ async function adjustBalance(conn, userId, delta, { type, description = null, re
         throw httpError(402, `Yetersiz bakiye. Gerekli: ${money(-amount).toFixed(2)}, mevcut: ${money(users[0].balance).toFixed(2)}.`, { code: 'INSUFFICIENT_BALANCE' });
     }
     await conn.query('UPDATE panel_users SET balance = ? WHERE id = ?', [after, userId]);
-    await conn.query(
+    const [result] = await conn.query(
         `INSERT INTO panel_transactions (user_id, type, amount, balance_after, description, reference_type, reference_id, actor_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [userId, type || 'adjustment', amount, after, description ? String(description).slice(0, 255) : null,
             referenceType, referenceId === null || referenceId === undefined ? null : String(referenceId), actorId]
     );
-    return after;
+    return { balance: after, transactionId: result.insertId };
+}
+
+/** Same as recordBalanceChange but returns only the new balance (legacy callers). */
+async function adjustBalance(conn, userId, delta, options = {}) {
+    return (await recordBalanceChange(conn, userId, delta, options)).balance;
+}
+
+// ============================================================================
+//  Receipts (numbered, immutable snapshots of a ledger entry)
+// ============================================================================
+
+function formatReceiptNumber(prefix, year, seq) {
+    const clean = String(prefix || 'MKB').replace(/[^A-Za-z0-9]/g, '').slice(0, 8).toUpperCase() || 'MKB';
+    return `${clean}-${year}-${String(seq).padStart(6, '0')}`;
+}
+
+async function nextReceiptNumber(conn) {
+    const year = new Date().getFullYear();
+    const key = `receipt_seq_${year}`;
+    await conn.query('INSERT IGNORE INTO panel_kv (`key`, `value`) VALUES (?, ?)', [key, '0']);
+    const [rows] = await conn.query('SELECT `value` FROM panel_kv WHERE `key` = ? FOR UPDATE', [key]);
+    const seq = (parseInt(rows[0].value, 10) || 0) + 1;
+    await conn.query('UPDATE panel_kv SET `value` = ? WHERE `key` = ?', [String(seq), key]);
+    const [prefixRows] = await conn.query("SELECT `value` FROM panel_settings WHERE `key` = 'receipt_prefix'");
+    return formatReceiptNumber(prefixRows[0] && prefixRows[0].value, year, seq);
+}
+
+/**
+ * lines: [{ description, quantity?, unitPrice?, discount?, amount }]
+ * Buyer and seller details are copied so later profile/setting changes never alter an issued receipt.
+ */
+async function createReceipt(conn, { userId, transactionId, type, amount, lines }) {
+    const number = await nextReceiptNumber(conn);
+    const [users] = await conn.query('SELECT id, username, email FROM panel_users WHERE id = ?', [userId]);
+    const [settings] = await conn.query("SELECT `key`, `value` FROM panel_settings WHERE `key` IN ('seller_info', 'site_name', 'currency')");
+    const map = Object.fromEntries(settings.map(r => [r.key, r.value]));
+    const buyer = users[0] ? { id: users[0].id, username: users[0].username, email: users[0].email || null } : { id: userId };
+    const seller = { name: map.site_name || 'CS 1.6 Panel', info: map.seller_info || '', currency: map.currency || 'TL' };
+    const [result] = await conn.query(
+        'INSERT INTO panel_receipts (number, user_id, transaction_id, type, amount, line_items, buyer, seller) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [number, userId, transactionId, type, money(amount), JSON.stringify(lines || []), JSON.stringify(buyer), JSON.stringify(seller)]
+    );
+    return { id: result.insertId, number };
+}
+
+function normalizeReceipt(row) {
+    if (!row) return null;
+    const parse = v => { try { return JSON.parse(v); } catch (_) { return null; } };
+    const { line_items: items, ...rest } = row;
+    return { ...rest, amount: money(row.amount), lines: parse(items) || [], buyer: parse(row.buyer) || {}, seller: parse(row.seller) || {} };
+}
+
+async function listReceipts({ userId = null, limit = 50, offset = 0 } = {}) {
+    const [rows] = await assertPool().query(
+        `SELECT r.id, r.number, r.user_id, r.transaction_id, r.type, r.amount, r.created_at, u.username
+         FROM panel_receipts r JOIN panel_users u ON u.id = r.user_id
+         ${userId ? 'WHERE r.user_id = ?' : ''} ORDER BY r.id DESC LIMIT ? OFFSET ?`,
+        [...(userId ? [userId] : []), Math.min(parseInt(limit, 10) || 50, 500), Math.max(parseInt(offset, 10) || 0, 0)]
+    );
+    return rows.map(r => ({ ...r, amount: money(r.amount) }));
+}
+
+async function getReceipt({ id = null, transactionId = null }) {
+    const [rows] = await assertPool().query(
+        `SELECT * FROM panel_receipts WHERE ${id ? 'id = ?' : 'transaction_id = ?'} LIMIT 1`, [id || transactionId]);
+    return normalizeReceipt(rows[0]);
+}
+
+// ============================================================================
+//  Rental periods (one row per paid or trial term of a server)
+// ============================================================================
+
+async function insertRentalPeriod(conn, p) {
+    const [result] = await conn.query(
+        `INSERT INTO panel_rental_periods (server_id, user_id, port, transaction_id, kind, plan_slug, plan_name, months, days,
+            starts_at, ends_at, subtotal, period_discount, coupon_discount, coupon_code, amount_paid, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [p.serverId, p.userId, p.port, p.transactionId || null, p.kind, p.planSlug, String(p.planName).slice(0, 64), p.months || 1, p.days,
+            p.startsAt, p.endsAt, money(p.subtotal || 0), money(p.periodDiscount || 0), money(p.couponDiscount || 0),
+            p.couponCode || null, money(p.amountPaid || 0), p.status || 'active']
+    );
+    return result.insertId;
+}
+
+async function listRentalPeriods(serverId, { conn = null, lock = false } = {}) {
+    const db = conn || assertPool();
+    const [rows] = await db.query(
+        `SELECT * FROM panel_rental_periods WHERE server_id = ? AND status <> 'void' ORDER BY ends_at DESC ${lock ? 'FOR UPDATE' : ''}`, [serverId]);
+    return rows.map(r => ({ ...r, amount_paid: money(r.amount_paid), refunded_amount: money(r.refunded_amount), subtotal: money(r.subtotal) }));
+}
+
+// ============================================================================
+//  Refund requests & withdrawals (business rules live in refundService.js)
+// ============================================================================
+
+async function listRefundRequests({ userId = null, status = null, limit = 100, offset = 0 } = {}) {
+    const where = [];
+    const params = [];
+    if (userId) { where.push('r.user_id = ?'); params.push(userId); }
+    if (status) { where.push('r.status = ?'); params.push(status); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const [rows] = await assertPool().query(
+        `SELECT r.*, u.username, a.username AS reviewed_by_name, s.name AS server_name, s.container_id
+         FROM panel_refund_requests r
+         JOIN panel_users u ON u.id = r.user_id
+         LEFT JOIN panel_users a ON a.id = r.reviewed_by
+         LEFT JOIN panel_servers s ON s.id = r.server_id
+         ${clause} ORDER BY r.id DESC LIMIT ? OFFSET ?`,
+        [...params, Math.min(parseInt(limit, 10) || 100, 500), Math.max(parseInt(offset, 10) || 0, 0)]
+    );
+    const [count] = await assertPool().query(`SELECT COUNT(*) AS total FROM panel_refund_requests r ${clause}`, params);
+    return { requests: rows.map(r => ({ ...r, quoted_amount: money(r.quoted_amount), approved_amount: r.approved_amount === null ? null : money(r.approved_amount) })), total: count[0].total };
+}
+
+async function listWithdrawals({ userId = null, status = null, limit = 100, offset = 0 } = {}) {
+    const where = [];
+    const params = [];
+    if (userId) { where.push('w.user_id = ?'); params.push(userId); }
+    if (status) { where.push('w.status = ?'); params.push(status); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const [rows] = await assertPool().query(
+        `SELECT w.*, u.username, a.username AS reviewed_by_name
+         FROM panel_withdrawals w
+         JOIN panel_users u ON u.id = w.user_id
+         LEFT JOIN panel_users a ON a.id = w.reviewed_by
+         ${clause} ORDER BY w.id DESC LIMIT ? OFFSET ?`,
+        [...params, Math.min(parseInt(limit, 10) || 100, 500), Math.max(parseInt(offset, 10) || 0, 0)]
+    );
+    const [count] = await assertPool().query(`SELECT COUNT(*) AS total FROM panel_withdrawals w ${clause}`, params);
+    return { withdrawals: rows.map(w => ({ ...w, amount: money(w.amount) })), total: count[0].total };
+}
+
+async function countPendingBillingRequests() {
+    const [[refunds]] = await assertPool().query("SELECT COUNT(*) AS c FROM panel_refund_requests WHERE status = 'pending'");
+    const [[withdrawals]] = await assertPool().query("SELECT COUNT(*) AS c FROM panel_withdrawals WHERE status = 'pending'");
+    return { refunds: refunds.c, withdrawals: withdrawals.c };
 }
 
 async function listTransactions({ userId = null, limit = 50, offset = 0, type = null } = {}) {
@@ -1229,11 +1463,11 @@ function depositReferenceCode(userId) {
     return `CS${String(userId).padStart(5, '0')}`;
 }
 
-async function createPaymentReport(userId, amount, senderName, receiptPath) {
+async function createPaymentReport(userId, amount, senderName, receiptPath, intent = null) {
     const [result] = await assertPool().query(
-        `INSERT INTO panel_payments (user_id, amount, sender_name, receipt_path, status, reference_code)
-         VALUES (?, ?, ?, ?, 'pending', ?)`,
-        [userId, money(amount), senderName, receiptPath, depositReferenceCode(userId)]
+        `INSERT INTO panel_payments (user_id, amount, sender_name, receipt_path, status, reference_code, intent)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+        [userId, money(amount), senderName, receiptPath, depositReferenceCode(userId), intent ? JSON.stringify(intent) : null]
     );
     return result.insertId;
 }
@@ -1301,11 +1535,17 @@ async function approvePayment(paymentId, { actorId = null, creditedAmount = null
             `UPDATE panel_payments SET status = 'approved', reviewed_by = ?, reviewed_at = NOW(), admin_note = ?, credited_amount = ? WHERE id = ?`,
             [actorId, note ? String(note).slice(0, 255) : null, amount, paymentId]
         );
-        await adjustBalance(conn, payment.user_id, amount, {
-            type: 'deposit', description: `Havale/EFT bildirimi #${paymentId} onaylandı`,
-            referenceType: 'payment', referenceId: paymentId, actorId
+        const description = `Havale/EFT bildirimi #${paymentId} onaylandı`;
+        const { transactionId } = await recordBalanceChange(conn, payment.user_id, amount, {
+            type: 'deposit', description, referenceType: 'payment', referenceId: paymentId, actorId
         });
-        return { userId: payment.user_id, amount };
+        const receipt = await createReceipt(conn, {
+            userId: payment.user_id, transactionId, type: 'deposit', amount,
+            lines: [{ description: `Bakiye yükleme (havale/EFT, ref. ${payment.reference_code || depositReferenceCode(payment.user_id)})`, amount }]
+        });
+        let intent = null;
+        try { intent = payment.intent ? JSON.parse(payment.intent) : null; } catch (_) { intent = null; }
+        return { userId: payment.user_id, amount, receipt, intent };
     });
 }
 
@@ -1919,6 +2159,8 @@ async function recordTaskRun(taskId, { status, message = null, nextRunAt = null 
 }
 
 module.exports = {
+    recordBalanceChange, createReceipt, formatReceiptNumber, listReceipts, getReceipt,
+    insertRentalPeriod, listRentalPeriods, listRefundRequests, listWithdrawals, countPendingBillingRequests,
     // lifecycle
     init, close, assertPool, withTransaction, httpError, money,
     // auth

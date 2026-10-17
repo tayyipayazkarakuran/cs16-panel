@@ -217,6 +217,7 @@ app.use('/api/mysql', require('./routes/mysql'));
 app.use('/api/php', require('./routes/php'));
 app.use('/api/sites', require('./routes/sites'));
 app.use('/api/payments', require('./routes/payments'));
+app.use('/api', require('./routes/refunds'));
 app.use('/api/admin', require('./routes/admin'));
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));

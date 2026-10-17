@@ -1,9 +1,10 @@
 import { append,
-    state, api, h, clear, icon, btn, linkBtn, card, badge, fmtMoney, fmtDate, daysLeft, statusBadge, toast, toastError,
+    state, api, h, clear, icon, btn, linkBtn, card, badge, table, fmtMoney, fmtDate, fmtDateTime, daysLeft, statusBadge, toast, toastError,
     confirmDialog, openModal, withBusy, loading, errorBox, emptyState, copyable, copyText, switchControl, dropdown, menuItem, menuSep,
     on, input, field, select, navigate
 } from '../core.js';
 import { loadServers, loadSummary } from '../main.js';
+import { openDepositDialog } from '../components/deposit.js';
 import * as tabs from './serverTabs.js';
 
 const TABS = [
@@ -58,8 +59,16 @@ export function openRenewDialog(server) {
                     h('div', { class: 'summary-line small' }, h('span', { class: 'muted' }, 'Yeni bitiş tarihi'), h('span', {}, fmtDate(newExpiry))),
                     h('div', { class: 'summary-line small' }, h('span', { class: 'muted' }, 'Bakiyeniz'), h('span', { class: enough ? '' : 'text-danger' }, fmtMoney(state.user.balance))),
                     choice.plan !== server.plan_type ? h('p', { class: 'small text-warning mt-2' }, 'Paket değişikliğinde slot sayısı güncellenir; sunucu kısa süreliğine yeniden başlatılır. Dosyalarınız korunur.') : null,
-                    enough ? null : h('div', { class: 'alert alert-warning mt-2' }, icon('wallet'), h('div', {}, h('strong', {}, 'Bakiye yetersiz'), h('p', {}, `${fmtMoney(q.total - state.user.balance)} eksik.`)),
-                        h('div', { class: 'alert-actions' }, linkBtn('Bakiye yükle', '#/billing', { size: 'sm', variant: 'primary', attrs: { onClick: () => modal.close() } }))));
+                    enough ? null : h('div', { class: 'alert alert-warning mt-2' }, icon('wallet'), h('div', {}, h('strong', {}, 'Bakiye yetersiz'),
+                        h('p', {}, `${fmtMoney(q.total - state.user.balance)} eksik. Eksik tutarı havale ile bildirin; ödeme onaylanınca süre otomatik uzatılır.`)),
+                        h('div', { class: 'alert-actions' }, btn('Havale bildir', { size: 'sm', variant: 'primary', iconName: 'send', onClick: () => {
+                            modal.close();
+                            openDepositDialog({
+                                suggestedAmount: q.total - state.user.balance,
+                                intent: { type: 'renew', serverId: server.id, months: choice.months, plan: choice.plan, coupon: choice.coupon || undefined },
+                                intentLabel: `Ödeme onaylanınca ${q.months} ay otomatik uzat (${fmtMoney(q.total)})`
+                            });
+                        } }))));
                 payBtn.disabled = !enough;
             } catch (error) {
                 if (mine !== seq) return;
@@ -93,6 +102,48 @@ export function openRenewDialog(server) {
         paintPeriods();
         quote();
     });
+}
+
+function canRequestRefund(server) {
+    return !server.is_pool && !server.plan_is_trial && Number(server.owner_id) === Number(state.user.id) && !(state.config && state.config.refundsDisabled);
+}
+
+/** Customer refund request: shows the prorated breakdown before asking for a reason. */
+async function openRefundDialog(server) {
+    const body = h('div', {}, loading('İade tutarı hesaplanıyor…'));
+    const reason = h('textarea', { class: 'textarea', rows: 3, maxlength: 500, placeholder: 'Örn. Sunucuyu artık kullanmayacağım / beklediğim performansı alamadım…', 'aria-label': 'İade sebebi' });
+    const submit = btn('İade talebi gönder', { variant: 'danger-solid', disabled: true });
+    const modal = openModal({ title: `İade talebi · Port ${server.port}`, body, footer: [btn('Vazgeç', { variant: 'ghost', onClick: () => modal.close() }), submit] });
+    let data;
+    try { data = await api(`/api/servers/${server.id}/refund-quote`); } catch (error) { clear(body, errorBox(error)); return; }
+    const q = data.quote;
+    if (data.pendingRequest) { clear(body, h('div', { class: 'alert alert-info' }, icon('info'), h('div', {}, h('strong', {}, 'Bekleyen talebiniz var'), h('p', {}, 'Bu sunucu için iade talebiniz inceleniyor. Durumunu Bakiye & Ödemeler sayfasından takip edebilirsiniz.')))); return; }
+    if (!q.enabled) { clear(body, h('div', { class: 'alert alert-warning' }, icon('alert'), h('div', {}, h('strong', {}, 'İade talepleri kapalı'), h('p', {}, 'Lütfen destek ile iletişime geçin.')))); return; }
+    if (q.legacy || q.total <= 0 || q.total < q.minAmount) {
+        clear(body, h('div', { class: 'alert alert-warning' }, icon('alert'), h('div', {}, h('strong', {}, 'İade edilebilir tutar yok'),
+            h('p', {}, q.legacy ? 'Bu kiralama yeni ödeme sistemi öncesinde yapıldığı için otomatik hesaplanamıyor; destek ile iletişime geçin.' : 'Ödenmiş ve henüz kullanılmamış bir süre bulunmuyor.'))));
+        return;
+    }
+    submit.disabled = false;
+    clear(body, h('div', { class: 'form-stack' },
+        h('p', { class: 'text-2' }, 'Ödediğiniz tutarın kullanılmayan kısmı bakiyenize iade edilir. Talep yönetici onayından sonra işlenir; onaylanınca iade edilen süre aboneliğinizden düşülür.'),
+        h('div', { class: 'refund-breakdown' }, table([
+            { label: 'Dönem', render: i => h('div', { class: 'cell-title' }, h('strong', {}, i.planName), h('span', {}, `${fmtDate(i.startsAt)} → ${fmtDate(i.endsAt)}`)) },
+            { label: 'Kalan', type: 'num', render: i => `${i.remainingDays} / ${i.totalDays} gün` },
+            { label: 'Ödenen', type: 'money', render: i => fmtMoney(i.paid - i.alreadyRefunded), hideSm: true },
+            { label: 'İade', type: 'money', render: i => h('strong', {}, fmtMoney(i.amount)) }
+        ], q.items)),
+        q.fee ? h('div', { class: 'summary-line' }, h('span', {}, `İade kesintisi (%${q.feePercent})`), h('span', { class: 'text-danger' }, `-${fmtMoney(q.fee)}`)) : null,
+        h('div', { class: 'summary-line total' }, h('span', {}, 'Tahmini iade'), h('span', {}, fmtMoney(q.total))),
+        field('İade sebebi', reason, { help: 'En az 10 karakter. Yönetici talebinizi bu açıklamaya göre değerlendirir.' })));
+    submit.addEventListener('click', () => withBusy(submit, async () => {
+        if (reason.value.trim().length < 10) { toast('Lütfen sebebi en az 10 karakterle açıklayın.', 'warning'); reason.focus(); return; }
+        try {
+            const res = await api('/api/refunds', { method: 'POST', body: { serverId: server.id, reason: reason.value.trim() } });
+            toast(res.message, 'success');
+            modal.close();
+        } catch (error) { toastError(error); }
+    }));
 }
 
 function subscriptionStrip(server) {
@@ -176,6 +227,7 @@ function powerControls(server) {
             } catch (error) { toastError(error); } finally { t.remove(); }
         }, { iconName: 'refresh', danger: true }),
         menuItem('Adresi kopyala', () => { close(); copyText(server.address); }, { iconName: 'copy' }),
+        canRequestRefund(server) ? menuItem('İade talep et', () => { close(); openRefundDialog(server); }, { iconName: 'wallet' }) : null,
         menuItem('Steam ile bağlan', () => { close(); window.location.href = `steam://connect/${server.address}`; }, { iconName: 'play' }),
         state.user.role === 'admin' && !server.protected ? [menuSep(), menuItem('Sunucuyu sil', async () => {
             close();
@@ -204,17 +256,44 @@ function statsStrip(server) {
         tile('CPU', server.online ? `%${Number(server.cpu || 0).toFixed(1)}` : '—', 'cpu'));
 }
 
-function paywall(server) {
+function countdownText(target) {
+    const ms = new Date(target).getTime() - Date.now();
+    if (ms <= 0) return 'Silinmek üzere';
+    const d = Math.floor(ms / 86400000);
+    const hh = Math.floor((ms % 86400000) / 3600000);
+    const mm = Math.floor((ms % 3600000) / 60000);
+    return d ? `${d} gün ${hh} sa` : `${hh} sa ${String(mm).padStart(2, '0')} dk`;
+}
+
+function paywall(server, onCleanup) {
     const expired = server.suspended_reason === 'expired';
+    const isOwner = Number(server.owner_id) === Number(state.user.id);
+    const countdown = h('div', { class: 'countdown', 'aria-live': 'off' }, server.deletes_at ? countdownText(server.deletes_at) : '');
+    if (server.deletes_at && onCleanup) {
+        const timer = setInterval(() => { countdown.textContent = countdownText(server.deletes_at); }, 30000);
+        onCleanup(() => clearInterval(timer));
+    }
     return card({ body: h('div', { class: 'paywall' },
         h('div', { class: 'empty-icon' }, icon('lock', 'icon-lg')),
         h('h2', {}, expired ? 'Sunucunuzun süresi doldu' : 'Sunucu askıya alındı'),
+        expired && server.deletes_at ? h('div', { class: 'stack stack-sm center' },
+            h('span', { class: 'eyebrow' }, 'Kalıcı silinmeye kalan süre'),
+            countdown,
+            h('span', { class: 'small muted' }, `${fmtDateTime(server.deletes_at)} tarihinde tüm dosyalar, veritabanı ve web sitesi silinir.`)) : null,
         h('p', {}, expired
-            ? 'Sunucunuz durduruldu ve yönetim araçları kilitlendi. Süreyi uzattığınız anda sunucu otomatik olarak yeniden başlar; dosyalarınız, veritabanınız ve web siteniz olduğu gibi korunur. Askı süresi içinde yenilenmezse tüm veriler silinir.'
-            : `Bu sunucu yönetici tarafından askıya alındı${server.suspended_reason && server.suspended_reason !== 'admin' ? ` (sebep: ${server.suspended_reason})` : ''}. Ayrıntı için destek ile iletişime geçin.`),
-        expired ? h('div', { class: 'btn-group center' },
+            ? 'Sunucunuz durduruldu ve yönetim araçları kilitlendi. Süreyi uzattığınız anda sunucu otomatik olarak yeniden başlar; dosyalarınız, veritabanınız ve web siteniz olduğu gibi korunur.'
+            : `Bu sunucu yönetici tarafından askıya alındı${server.suspended_reason && server.suspended_reason !== 'admin' ? ` (sebep: ${server.suspended_reason})` : ''}. Bu durumda süre uzatılamaz; ayrıntı için destek ile iletişime geçin.`),
+        expired && isOwner ? h('div', { class: 'btn-group center' },
             btn('Şimdi uzat', { variant: 'primary', iconName: 'clock', onClick: () => openRenewDialog(server) }),
-            linkBtn('Bakiye yükle', '#/billing', { iconName: 'wallet' })) : null,
+            btn('Havale ile öde', { iconName: 'send', onClick: async () => {
+                const plan = ((state.config && state.config.plans) || []).find(p => p.slug === server.plan_type);
+                await openDepositDialog({
+                    suggestedAmount: plan ? Math.max(0, plan.price - Number(state.user.balance)) : null,
+                    intent: { type: 'renew', serverId: server.id, months: 1, plan: plan ? plan.slug : undefined },
+                    intentLabel: 'Ödeme onaylanınca 1 ay otomatik uzat'
+                });
+            } }),
+            linkBtn('Bakiye & makbuzlar', '#/billing', { variant: 'ghost', iconName: 'wallet' })) : null,
         state.config && state.config.supportContact ? h('p', { class: 'small muted' }, `Destek: ${state.config.supportContact}`) : null) });
 }
 
@@ -252,7 +331,7 @@ export async function render({ root, params, setTitle, onCleanup, isCurrent }) {
     root.appendChild(header);
 
     if (server.suspended && state.user.role !== 'admin') {
-        root.appendChild(paywall(server));
+        root.appendChild(paywall(server, onCleanup));
         onCleanup(on('servers-updated', () => {
             const s = state.servers.find(x => x.id === params.id);
             if (s && !s.suspended) navigate(`/servers/${s.id}/${tabId}`);

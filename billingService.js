@@ -71,6 +71,14 @@ function publicQuote(q) {
     return copy;
 }
 
+/** Receipt line items describing a quote, so the receipt explains the total. */
+function receiptLines(q, label) {
+    const lines = [{ description: label, quantity: q.months, unitPrice: q.plan.price, amount: q.subtotal }];
+    if (q.periodDiscount) lines.push({ description: `Dönem indirimi (%${q.periodDiscountPct})`, amount: -q.periodDiscount });
+    if (q.couponDiscount) lines.push({ description: `Kupon ${q.coupon ? q.coupon.code : ''}`.trim(), amount: -q.couponDiscount });
+    return lines;
+}
+
 function validateRconPassword(value) {
     const pw = String(value || '').trim();
     if (!/^[A-Za-z0-9!@#$%^&*()_+\-=.,:?]{8,64}$/.test(pw)) {
@@ -80,7 +88,11 @@ function validateRconPassword(value) {
 }
 
 async function assertTrialAllowed(userId, conn) {
-    const [used] = await conn.query("SELECT COUNT(*) AS c FROM panel_transactions WHERE user_id = ? AND type = 'trial'", [userId]);
+    // A trial whose provisioning failed is voided and must not burn the user's one trial.
+    const [used] = await conn.query(
+        `SELECT COUNT(*) AS c FROM panel_transactions t
+         WHERE t.user_id = ? AND t.type = 'trial'
+           AND NOT EXISTS (SELECT 1 FROM panel_rental_periods p WHERE p.transaction_id = t.id AND p.status = 'void')`, [userId]);
     if (used[0].c > 0) throw httpError(409, 'Deneme paketini daha önce kullandınız. Lütfen ücretli bir paket seçin.');
     const limit = parseInt(await panelDb.getSetting('global_free_limit') || '0', 10);
     const [active] = await conn.query(
@@ -127,23 +139,25 @@ async function rentServer(docker, user, input, { ip = null } = {}) {
         const slot = rows[0];
         const name = requestedName || `CS 1.6 Server ${slot.port}`;
 
-        if (q.total > 0) {
-            await panelDb.adjustBalance(conn, user.id, -q.total, {
-                type: 'purchase',
-                description: `${plan.name} paketi · ${q.months} ay · port ${slot.port}`,
-                referenceType: 'server', referenceId: slot.port, actorId: user.id
-            });
-        } else {
-            await panelDb.adjustBalance(conn, user.id, 0, {
-                type: plan.is_trial ? 'trial' : 'purchase',
-                description: `${plan.name} paketi · port ${slot.port}`,
-                referenceType: 'server', referenceId: slot.port, actorId: user.id
-            });
-        }
+        const txType = q.total > 0 ? 'purchase' : (plan.is_trial ? 'trial' : 'purchase');
+        const description = q.total > 0 ? `${plan.name} paketi · ${q.months} ay · port ${slot.port}` : `${plan.name} paketi · port ${slot.port}`;
+        const { transactionId } = await panelDb.recordBalanceChange(conn, user.id, -q.total, {
+            type: txType, description, referenceType: 'server', referenceId: slot.port, actorId: user.id
+        });
         if (q._coupon) {
             await panelDb.redeemCoupon(conn, q._coupon, { userId: user.id, serverPort: slot.port, discount: q.couponDiscount });
         }
-        const expiresAt = new Date(Date.now() + q.days * 86400000);
+        const startsAt = new Date();
+        const expiresAt = new Date(startsAt.getTime() + q.days * 86400000);
+        const periodId = await panelDb.insertRentalPeriod(conn, {
+            serverId: slot.id, userId: user.id, port: slot.port, transactionId, kind: plan.is_trial ? 'trial' : 'purchase',
+            planSlug: plan.slug, planName: plan.name, months: q.months, days: q.days, startsAt, endsAt: expiresAt,
+            subtotal: q.subtotal, periodDiscount: q.periodDiscount, couponDiscount: q.couponDiscount,
+            couponCode: q.coupon ? q.coupon.code : null, amountPaid: q.total
+        });
+        if (q.total > 0) {
+            await panelDb.createReceipt(conn, { userId: user.id, transactionId, type: 'purchase', amount: q.total, lines: receiptLines(q, `${plan.name} sunucu kiralama · port ${slot.port} · ${q.days} gün`) });
+        }
         await conn.query(
             `UPDATE panel_servers SET owner_id = ?, plan_type = ?, name = ?, rcon_password = ?, expires_at = ?, is_pool = 0,
                 suspended = 0, suspended_reason = NULL, auto_renew = 0, expiry_notice_stage = 0, rented_at = NOW(),
@@ -151,10 +165,10 @@ async function rentServer(docker, user, input, { ip = null } = {}) {
              WHERE id = ?`,
             [user.id, plan.slug, name, rconPassword, expiresAt, crypto.randomBytes(18).toString('base64url'), slot.id]
         );
-        return { slot, quote: q, name, expiresAt };
+        return { slot, quote: q, name, expiresAt, periodId };
     });
 
-    const { slot, quote: q } = purchase;
+    const { slot, quote: q, periodId } = purchase;
     try {
         const record = await provisionFreshServer(docker, slot, { maxPlayers: plan.max_players, startMap });
         await panelDb.logAudit({ actorId: user.id, actorName: user.username, action: 'server.rent', targetType: 'server', targetId: slot.port, details: { plan: plan.slug, months: q.months, total: q.total }, ip });
@@ -167,19 +181,26 @@ async function rentServer(docker, user, input, { ip = null } = {}) {
         return { record, quote: publicQuote(q) };
     } catch (error) {
         console.error(`[Rental] provisioning failed for port ${slot.port}:`, error);
-        await compensateFailedRental(docker, user, slot, q).catch(e => console.error('[Rental] compensation failed:', e));
+        await compensateFailedRental(docker, user, slot, q, periodId).catch(e => console.error('[Rental] compensation failed:', e));
         throw httpError(500, 'Sunucu hazırlanırken bir hata oluştu. Ücret bakiyenize iade edildi, lütfen tekrar deneyin.');
     }
 }
 
-async function compensateFailedRental(docker, user, slot, q) {
+async function compensateFailedRental(docker, user, slot, q, periodId = null) {
     const poolOwner = await panelDb.getPoolOwnerId();
     await panelDb.withTransaction(async conn => {
         if (q.total > 0) {
-            await panelDb.adjustBalance(conn, user.id, q.total, {
-                type: 'refund', description: `Port ${slot.port} kurulumu başarısız oldu, otomatik iade`,
-                referenceType: 'server', referenceId: slot.port
+            const description = `Port ${slot.port} kurulumu başarısız oldu, otomatik iade`;
+            const { transactionId } = await panelDb.recordBalanceChange(conn, user.id, q.total, {
+                type: 'refund', description, referenceType: 'server', referenceId: slot.port
             });
+            await panelDb.createReceipt(conn, { userId: user.id, transactionId, type: 'refund', amount: q.total, lines: [{ description, amount: q.total }] });
+        }
+        if (periodId) await conn.query("UPDATE panel_rental_periods SET status = 'void', refunded_amount = amount_paid WHERE id = ?", [periodId]);
+        // Give the coupon use back: the customer never received the service.
+        if (q._coupon) {
+            await conn.query('UPDATE panel_coupons SET used_count = GREATEST(used_count - 1, 0) WHERE id = ?', [q._coupon.id]);
+            await conn.query('DELETE FROM panel_coupon_redemptions WHERE coupon_id = ? AND user_id = ? AND server_port = ? ORDER BY id DESC LIMIT 1', [q._coupon.id, user.id, slot.port]);
         }
         await conn.query(
             `UPDATE panel_servers SET owner_id = ?, is_pool = 1, plan_type = 'free', name = ?, expires_at = '2035-01-01 00:00:00'
@@ -250,22 +271,34 @@ async function renewServer(docker, actor, containerId, { months = 1, couponCode 
     if (targetPlan.is_trial) throw httpError(400, 'Deneme paketi uzatılamaz. Devam etmek için ücretli bir paket seçin.');
     if (planSlug && planSlug !== current.plan_type && !targetPlan.active) throw httpError(400, 'Seçilen paket satışta değil.');
     const payerId = current.owner_id;
+    if (current.suspended && current.suspended_reason !== 'expired') {
+        // An operator suspension is not a payment problem; charging would not reactivate the server.
+        throw httpError(409, 'Bu sunucu yönetici tarafından askıya alındı; süre uzatılamaz. Lütfen destek ile iletişime geçin.', { code: 'ADMIN_SUSPENDED' });
+    }
 
     const result = await panelDb.withTransaction(async conn => {
         const [rows] = await conn.query('SELECT * FROM panel_servers WHERE id = ? FOR UPDATE', [current.id]);
         const server = rows[0];
         const q = await quote({ plan: targetPlan, months, couponCode, userId: payerId, conn });
-        await panelDb.adjustBalance(conn, payerId, -q.total, {
-            type: 'renewal',
-            description: `${auto ? 'Otomatik yenileme' : 'Süre uzatma'} · ${targetPlan.name} · ${q.months} ay · port ${server.port}`,
-            referenceType: 'server', referenceId: server.port, actorId: actor.id
+        const description = `${auto ? 'Otomatik yenileme' : 'Süre uzatma'} · ${targetPlan.name} · ${q.months} ay · port ${server.port}`;
+        const { transactionId } = await panelDb.recordBalanceChange(conn, payerId, -q.total, {
+            type: 'renewal', description, referenceType: 'server', referenceId: server.port, actorId: actor.id
         });
         if (q._coupon) await panelDb.redeemCoupon(conn, q._coupon, { userId: payerId, serverPort: server.port, discount: q.couponDiscount });
         const base = new Date(server.expires_at) > new Date() ? new Date(server.expires_at) : new Date();
         const newExpiry = new Date(base.getTime() + q.days * 86400000);
+        await panelDb.insertRentalPeriod(conn, {
+            serverId: server.id, userId: payerId, port: server.port, transactionId, kind: auto ? 'auto_renewal' : 'renewal',
+            planSlug: targetPlan.slug, planName: targetPlan.name, months: q.months, days: q.days, startsAt: base, endsAt: newExpiry,
+            subtotal: q.subtotal, periodDiscount: q.periodDiscount, couponDiscount: q.couponDiscount,
+            couponCode: q.coupon ? q.coupon.code : null, amountPaid: q.total
+        });
+        if (q.total > 0) {
+            await panelDb.createReceipt(conn, { userId: payerId, transactionId, type: 'renewal', amount: q.total, lines: receiptLines(q, `${targetPlan.name} süre uzatma · port ${server.port} · ${q.days} gün`) });
+        }
         const wasExpired = !!server.suspended && server.suspended_reason === 'expired';
         await conn.query(
-            `UPDATE panel_servers SET expires_at = ?, plan_type = ?, last_renewed_at = NOW(), expiry_notice_stage = 0
+            `UPDATE panel_servers SET expires_at = ?, plan_type = ?, last_renewed_at = NOW(), expiry_notice_stage = 0, deletion_notice_stage = 0
                 ${wasExpired ? ", suspended = 0, suspended_reason = NULL" : ''}
              WHERE id = ?`,
             [newExpiry, targetPlan.slug, server.id]
@@ -282,6 +315,8 @@ async function renewServer(docker, actor, containerId, { months = 1, couponCode 
     } else if (result.wasExpired) {
         try { await docker.getContainer(record.container_id).start(); } catch (_) { /* already running */ }
     }
+    // A reactivated server gets its custom domain back.
+    if (result.wasExpired) { try { await phpSite.writeDomainMap(); } catch (_) { /* best effort */ } }
     await panelDb.logAudit({
         actorId: actor.id, actorName: actor.username, action: auto ? 'server.auto_renew' : 'server.renew',
         targetType: 'server', targetId: record.port, details: { plan: targetPlan.slug, months: result.quote.months, total: result.quote.total }, ip
@@ -305,5 +340,6 @@ module.exports = {
     renewServer,
     provisionFreshServer,
     recreateContainerKeepingData,
-    validateRconPassword
+    validateRconPassword,
+    receiptLines
 };

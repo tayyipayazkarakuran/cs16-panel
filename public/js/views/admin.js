@@ -5,7 +5,8 @@ import { append,
     generatePassword
 } from '../core.js';
 import { loadServers } from '../main.js';
-import { TX_TYPES, paymentStatusBadge, viewReceipt } from './billing.js';
+import { TX_TYPES, RECEIPT_TYPES, paymentStatusBadge, requestStatusBadge, viewReceipt } from './billing.js';
+import { openReceipt } from '../components/receipt.js';
 
 const enc = encodeURIComponent;
 const PAGE = 50;
@@ -15,6 +16,7 @@ const SECTIONS = {
     users: ['Kullanıcılar', renderUsers],
     servers: ['Tüm Sunucular', renderServers],
     payments: ['Ödemeler', renderPayments],
+    refunds: ['İadeler & Çekimler', renderRefunds],
     transactions: ['Hesap Hareketleri', renderTransactions],
     plans: ['Paketler & Kuponlar', renderPlans],
     announcements: ['Duyurular', renderAnnouncements],
@@ -93,12 +95,12 @@ async function renderOverview({ root, isCurrent, onCleanup }) {
             h('div', { class: 'grid grid-4' },
                 kpi('Müşteriler', fmtNumber(o.users.total), 'users', `${n(o.users.new7d)} yeni (7 gün) · ${n(o.users.active24h)} aktif (24 sa)`, '#/admin/users'),
                 kpi('Kiralık sunucular', `${n(o.servers.rented)} / ${n(o.servers.total)}`, 'server', `${n(o.servers.pool)} boşta · ${n(o.servers.running)} çalışıyor · ${n(o.servers.suspended)} askıda`, '#/admin/servers'),
-                kpi('Satış (30 gün)', fmtMoney(o.revenue.sales30d), 'activity', `Bugün: ${fmtMoney(o.revenue.sales24h)} · Toplam: ${fmtMoney(o.revenue.salesTotal)}`, '#/admin/transactions'),
+                kpi('Net satış (30 gün)', fmtMoney(o.revenue.sales30d), 'activity', `İadeler: ${fmtMoney(o.revenue.refunds30d || 0)} · Bugün: ${fmtMoney(o.revenue.sales24h)}`, '#/admin/transactions'),
                 kpi('Bekleyen ödeme', fmtNumber(o.pendingPayments.count), 'receipt', `${fmtMoney(o.pendingPayments.amount)} onay bekliyor`, '#/admin/payments')),
             h('div', { class: 'grid grid-4' },
                 kpi('Müşteri bakiyeleri', fmtMoney(o.users.totalBalance), 'wallet', 'Hesaplarda bekleyen toplam bakiye'),
                 kpi('Otomatik yenileme', fmtNumber(o.servers.autoRenew), 'refresh', `${n(o.servers.rented) ? Math.round(n(o.servers.autoRenew) / n(o.servers.rented) * 100) : 0}% kiralık sunucuda açık`),
-                kpi('Askıdaki hesaplar', fmtNumber(o.users.suspended), 'shield', 'Panele girişi engellenen müşteriler', '#/admin/users'),
+                kpi('Bekleyen iade / çekim', `${fmtNumber((o.pendingBilling || {}).refunds || 0)} / ${fmtNumber((o.pendingBilling || {}).withdrawals || 0)}`, 'refresh', 'Onayınızı bekleyen talepler', '#/admin/refunds'),
                 kpi('Oyun konteynerleri', `${n(o.servers.running)} / ${n(o.servers.containers)}`, 'cpu', 'Çalışan / toplam', '#/admin/infra')),
             h('div', { class: 'grid grid-aside' },
                 card({ title: 'Satışlar', sub: 'Son 14 gün · kiralama + yenileme', iconName: 'activity', body: salesChart(o.salesByDay || []) }),
@@ -159,13 +161,15 @@ const AUDIT_LABELS = {
     'site.template': 'Site şablonu kurdu', 'site.domain': 'Alan adı bağladı', 'site.zip': 'Siteye ZIP yükledi', 'site.repair': 'Site izinlerini onardı',
     'account.password': 'Şifresini değiştirdi', 'account.logout_all': 'Tüm oturumları kapattı', 'account.profile': 'Profilini güncelledi',
     'infra.restart': 'Servis yeniden başlattı',
+    'refund.request': 'İade talep etti', 'refund.cancel': 'İade talebini iptal etti', 'refund.approve': 'İade onayladı', 'refund.reject': 'İade reddetti', 'refund.direct': 'Doğrudan iade yaptı',
+    'withdrawal.request': 'Para çekme talep etti', 'withdrawal.paid': 'Çekimi ödendi işaretledi', 'withdrawal.reject': 'Çekimi reddetti',
     'task.create': 'Görev oluşturdu', 'task.update': 'Görev düzenledi', 'task.delete': 'Görev sildi', 'task.run': 'Zamanlanmış görev çalıştı', 'task.run_manual': 'Görevi elle çalıştırdı'
 };
 
 const AUDIT_FILTERS = [
     ['', 'Tüm işlemler'], ['auth', 'Oturum'], ['account', 'Hesap'], ['server', 'Sunucu'], ['task', 'Görevler'], ['payment', 'Ödeme'], ['user', 'Kullanıcı'],
     ['mysql', 'MySQL'], ['site', 'Web sitesi'], ['plan', 'Paket'], ['coupon', 'Kupon'], ['announcement', 'Duyuru'], ['setting', 'Ayar'],
-    ['infra', 'Altyapı'], ['pool', 'Havuz'], ['lifecycle', 'Süre kontrolü']
+    ['refund', 'İade'], ['withdrawal', 'Para çekme'], ['infra', 'Altyapı'], ['pool', 'Havuz'], ['lifecycle', 'Süre kontrolü']
 ];
 
 function auditDetails(e) {
@@ -324,7 +328,8 @@ async function openUserDrawer(userId, onChange) {
                 { label: 'Tarih', type: 'date', render: t => fmtDateTime(t.created_at) },
                 { label: 'İşlem', render: t => { const [l, v] = TX_TYPES[t.type] || [t.type, '']; return badge(l, v); } },
                 { label: 'Açıklama', key: 'description', type: 'wrap' },
-                { label: 'Tutar', type: 'money', render: t => h('strong', { class: t.amount > 0 ? 'text-success' : 'text-danger' }, fmtMoney(t.amount)) }
+                { label: 'Tutar', type: 'money', render: t => h('strong', { class: t.amount > 0 ? 'text-success' : 'text-danger' }, fmtMoney(t.amount)) },
+                { label: '', type: 'actions', render: t => (RECEIPT_TYPES.has(t.type) && Number(t.amount) !== 0 ? btn(null, { size: 'xs', variant: 'ghost', iconName: 'receipt', title: 'Makbuz', onClick: () => openReceipt({ transactionId: t.id }) }) : null) }
             ], d.transactions, { empty: 'Hareket yok.', scrollY: true }) }),
             card({ title: 'Ödeme bildirimleri', iconName: 'receipt', bodyClass: 'tight', body: table([
                 { label: 'Tarih', type: 'date', render: p => fmtDateTime(p.created_at) },
@@ -455,7 +460,8 @@ async function renderServers({ root, onCleanup }) {
                     menuItem('Süre ekle / düş', () => { close(); serverAction(s, 'extend'); }, { iconName: 'clock' }),
                     menuItem('Paket değiştir', () => { close(); serverAction(s, 'plan'); }, { iconName: 'tag' }),
                     menuItem('Sahip değiştir', () => { close(); serverAction(s, 'transfer'); }, { iconName: 'users' }),
-                    s.suspended ? menuItem('Askıyı kaldır', () => { close(); serverAction(s, 'unsuspend'); }, { iconName: 'play' }) : menuItem('Askıya al', () => { close(); serverAction(s, 'suspend'); }, { iconName: 'lock' })],
+                    s.suspended ? menuItem('Askıyı kaldır', () => { close(); serverAction(s, 'unsuspend'); }, { iconName: 'play' }) : menuItem('Askıya al', () => { close(); serverAction(s, 'suspend'); }, { iconName: 'lock' }),
+                    menuItem('İade et', () => { close(); openRefundApproval({ server: s }).then(ok => { if (ok) loadServers().catch(() => {}); }); }, { iconName: 'wallet' })],
                 s.protected ? null : [menuSep(), menuItem('Sil ve havuza al', () => { close(); serverAction(s, 'release'); }, { iconName: 'trash', danger: true })]
             ]) }
         ], rows, { empty: 'Bu filtrede sunucu yok.', initialSort: { key: 'name', dir: 'asc' } }),
@@ -535,6 +541,142 @@ async function renderPayments({ root, onCleanup }) {
     card({ title: 'Ödeme bildirimleri', iconName: 'receipt', actions: [search, seg], bodyClass: 'tight', body: listBox }));
     load();
     autoRefresh(onCleanup, () => { if (status === 'pending' && offset === 0) load(true); }, 30000);
+}
+
+// ---------------------------------------------------------------------------
+//  Refunds & withdrawals
+// ---------------------------------------------------------------------------
+
+const SERVER_ACTION_OPTIONS = [
+    { value: 'shorten', label: 'İade edilen süreyi düş (önerilen)' },
+    { value: 'keep', label: 'Süreye dokunma (iyi niyet iadesi)' },
+    { value: 'release', label: 'Sunucuyu sil ve havuza al' }
+];
+
+/**
+ * Approve a customer request (request) or refund a server directly (server).
+ * Shows the prorated breakdown, lets the operator lower the amount and pick
+ * what happens to the subscription. Resolves true when money moved.
+ */
+async function openRefundApproval({ request = null, server = null }) {
+    const params = request ? `requestId=${request.id}` : `serverId=${server.dbId}`;
+    let data;
+    try { data = await api(`/api/admin/refunds/quote?${params}`); } catch (error) { toastError(error); return false; }
+    const q = data.quote;
+    const breakdown = q.items.length ? h('div', { class: 'refund-breakdown' }, table([
+        { label: 'Dönem', render: i => h('div', { class: 'cell-title' }, h('strong', {}, `${i.planName} · ${{ purchase: 'kiralama', renewal: 'uzatma', auto_renewal: 'oto. uzatma' }[i.kind] || i.kind}`), h('span', {}, `${fmtDate(i.startsAt)} → ${fmtDate(i.endsAt)}`)) },
+        { label: 'Kalan', type: 'num', render: i => `${i.remainingDays}/${i.totalDays} gün` },
+        { label: 'Ödenen', type: 'money', render: i => fmtMoney(i.paid - i.alreadyRefunded) },
+        { label: 'İade', type: 'money', render: i => h('strong', {}, fmtMoney(i.amount)) }
+    ], q.items)) : h('div', { class: 'alert alert-warning' }, icon('alert'), h('div', {}, h('strong', {}, q.legacy ? 'Ödeme dökümü yok' : 'İade edilebilir süre yok'),
+        h('p', {}, q.legacy ? 'Bu kiralama dönem kaydı tutulmadan önce yapılmış. Tutarı elle girin; "İade edilen süreyi düş" seçilirse abonelik hemen sona erer.' : 'Ödenmiş ve kullanılmamış süre kalmamış. Gerekirse iyi niyet iadesi için tutarı elle girin.')));
+    const result = await formDialog({
+        title: request ? `İade talebi #${request.id} · ${request.username}` : `İade et · Port ${data.server.port}`,
+        size: 'lg',
+        intro: request ? `Sebep: ${request.reason || '—'}` : `${data.server.name} · bitiş ${fmtDate(data.server.expires_at)}`,
+        fields: [
+            { name: 'breakdown', type: 'custom', full: true, render: () => h('div', { class: 'stack stack-sm' }, breakdown,
+                q.fee ? h('div', { class: 'summary-line' }, h('span', {}, `İade kesintisi (%${q.feePercent})`), h('span', { class: 'text-danger' }, `-${fmtMoney(q.fee)}`)) : null,
+                h('div', { class: 'summary-line total' }, h('span', {}, 'Hesaplanan iade'), h('span', {}, fmtMoney(q.total)))) },
+            { name: 'amount', label: 'İade tutarı', type: 'number', step: '0.01', min: 0.01, value: q.total ? String(q.total) : '', required: true,
+                help: q.legacy ? 'Ödeme dökümü olmadığı için tutarı siz belirleyin.' : `En fazla ${fmtMoney(q.total)}.`,
+                validate: v => (Number(v) <= 0 ? 'Tutar pozitif olmalı.' : (!q.legacy && Number(v) > q.total + 0.001 ? `En fazla ${fmtMoney(q.total)} iade edilebilir.` : null)) },
+            { name: 'serverAction', label: 'Sunucuya ne olsun?', type: 'select', value: 'shorten', options: SERVER_ACTION_OPTIONS },
+            { name: 'note', label: 'Not (müşteri görür)', full: true, maxlength: 255 }
+        ],
+        submitText: 'İadeyi onayla',
+        onSubmit: async v => {
+            if (v.serverAction === 'release' && !(await confirmDialog({ title: 'Sunucu silinecek', message: 'İade sonrası sunucunun tüm dosyaları, veritabanı ve web sitesi silinip port havuza alınacak.', confirmText: 'Sil ve iade et', danger: true }))) {
+                throw new Error('İşlem iptal edildi.');
+            }
+            const body = { amount: v.amount, serverAction: v.serverAction, note: v.note };
+            return request
+                ? api(`/api/admin/refunds/${request.id}/approve`, { method: 'POST', body, timeoutMs: 180000 })
+                : api('/api/admin/refunds/direct', { method: 'POST', body: { ...body, containerId: server.id }, timeoutMs: 180000 });
+        }
+    });
+    if (!result) return false;
+    toast(`${fmtMoney(result.amount)} iade edildi · makbuz ${result.receipt.number}`, 'success');
+    emit('billing-changed');
+    return true;
+}
+
+async function renderRefunds({ root, query, onCleanup }) {
+    let tab = query.get('tab') === 'withdrawals' ? 'withdrawals' : 'refunds';
+    let status = 'pending';
+    let offset = 0;
+    const seg = h('div', { class: 'segmented' });
+    const statusSeg = h('div', { class: 'segmented' });
+    const box = h('div', {}, loading());
+
+    function paintSeg() {
+        clear(seg, [['refunds', 'İade talepleri'], ['withdrawals', 'Para çekme']].map(([v, l]) =>
+            h('button', { type: 'button', class: tab === v ? 'active' : '', onClick: () => { tab = v; offset = 0; paintSeg(); load(); } }, l)));
+        const statuses = tab === 'refunds'
+            ? [['pending', 'Bekleyen'], ['approved', 'Onaylanan'], ['rejected', 'Reddedilen'], ['', 'Tümü']]
+            : [['pending', 'Bekleyen'], ['paid', 'Ödenen'], ['rejected', 'Reddedilen'], ['', 'Tümü']];
+        if (!statuses.some(([v]) => v === status)) status = 'pending';
+        clear(statusSeg, statuses.map(([v, l]) => h('button', { type: 'button', class: status === v ? 'active' : '', onClick: () => { status = v; offset = 0; paintSeg(); load(); } }, l)));
+    }
+
+    async function load() {
+        clear(box, loading());
+        const params = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
+        if (status) params.set('status', status);
+        try {
+            if (tab === 'refunds') {
+                const data = await api(`/api/admin/refunds?${params}`);
+                clear(box, table([
+                    { label: 'Tarih', type: 'date', render: r => fmtDateTime(r.created_at) },
+                    { label: 'Müşteri', render: r => h('a', { href: `#/admin/users/${r.user_id}` }, r.username) },
+                    { label: 'Sunucu', render: r => (r.container_id ? h('a', { href: `#/servers/${r.container_id}` }, r.server_name || `Port ${r.port}`) : `Port ${r.port || '—'}`) },
+                    { label: 'Sebep', type: 'wrap', key: 'reason', hideSm: true },
+                    { label: 'Tutar', type: 'money', render: r => h('div', { class: 'cell-title' }, h('strong', {}, fmtMoney(r.approved_amount ?? r.quoted_amount)), r.approved_amount !== null && r.approved_amount !== r.quoted_amount ? h('span', {}, `talep: ${fmtMoney(r.quoted_amount)}`) : null) },
+                    { label: 'Durum', render: r => h('div', { class: 'cell-title' }, requestStatusBadge(r.status), r.reviewed_by_name ? h('span', {}, `${r.reviewed_by_name} · ${fmtRelative(r.reviewed_at)}`) : null, r.admin_note ? h('span', {}, r.admin_note) : null) },
+                    { label: '', type: 'actions', render: r => (r.status === 'pending' ? tableActions(
+                        btn('İncele ve onayla', { size: 'xs', variant: 'success', onClick: async () => { if (await openRefundApproval({ request: r })) load(); } }),
+                        btn('Reddet', { size: 'xs', variant: 'danger', onClick: async () => {
+                            const ok = await formDialog({ title: `İade talebini reddet · ${r.username}`, fields: [{ name: 'note', label: 'Red sebebi (müşteri görür)', type: 'textarea', required: true, full: true }],
+                                submitText: 'Reddet', danger: true, onSubmit: v => api(`/api/admin/refunds/${r.id}/reject`, { method: 'POST', body: v }) });
+                            if (ok) { toast('Talep reddedildi.', 'success'); emit('billing-changed'); load(); }
+                        } })) : (r.transaction_id ? btn(null, { size: 'xs', variant: 'ghost', iconName: 'receipt', title: 'Makbuz', onClick: () => openReceipt({ transactionId: r.transaction_id }) }) : null)) }
+                ], data.requests, { empty: 'Bu filtrede iade talebi yok.' }),
+                pager({ offset, limit: PAGE, count: data.requests.length, total: data.total, onChange: n => { offset = n; load(); } }));
+            } else {
+                const data = await api(`/api/admin/withdrawals?${params}`);
+                clear(box, table([
+                    { label: 'Tarih', type: 'date', render: w => fmtDateTime(w.created_at) },
+                    { label: 'Müşteri', render: w => h('a', { href: `#/admin/users/${w.user_id}` }, w.username) },
+                    { label: 'Hesap', render: w => h('div', { class: 'cell-title' }, h('strong', {}, w.account_holder), h('span', { class: 'mono' }, w.iban.replace(/(.{4})/g, '$1 ').trim())) },
+                    { label: 'Tutar', type: 'money', render: w => h('strong', {}, fmtMoney(w.amount)) },
+                    { label: 'Durum', render: w => h('div', { class: 'cell-title' }, requestStatusBadge(w.status), w.payout_reference ? h('span', {}, `Ref. ${w.payout_reference}`) : null, w.admin_note ? h('span', {}, w.admin_note) : null) },
+                    { label: '', type: 'actions', render: w => (w.status === 'pending' ? tableActions(
+                        btn('Kopyala', { size: 'xs', iconName: 'copy', title: 'IBAN ve tutarı kopyala', onClick: () => navigator.clipboard.writeText(`${w.account_holder}\n${w.iban}\n${Number(w.amount).toFixed(2)}`).then(() => toast('Ödeme bilgileri kopyalandı.', 'success', 1800)).catch(() => {}) }),
+                        btn('Ödendi', { size: 'xs', variant: 'success', onClick: async () => {
+                            const ok = await formDialog({ title: `Ödendi olarak işaretle · ${fmtMoney(w.amount)}`, intro: `${w.account_holder} · ${w.iban}`, fields: [
+                                { name: 'reference', label: 'Banka işlem referansı', placeholder: 'Örn. EFT sorgu no', maxlength: 100 },
+                                { name: 'note', label: 'Not (müşteri görür)', full: true, maxlength: 255 }
+                            ], submitText: 'Ödendi', onSubmit: v => api(`/api/admin/withdrawals/${w.id}/paid`, { method: 'POST', body: v }) });
+                            if (ok) { toast('Çekim ödendi olarak işaretlendi; makbuz kesildi.', 'success'); emit('billing-changed'); load(); }
+                        } }),
+                        btn('Reddet', { size: 'xs', variant: 'danger', onClick: async () => {
+                            const ok = await formDialog({ title: 'Çekimi reddet', intro: 'Tutar müşterinin bakiyesine geri yüklenir.', fields: [{ name: 'note', label: 'Red sebebi (müşteri görür)', type: 'textarea', required: true, full: true }],
+                                submitText: 'Reddet', danger: true, onSubmit: v => api(`/api/admin/withdrawals/${w.id}/reject`, { method: 'POST', body: v }) });
+                            if (ok) { toast('Çekim reddedildi, tutar bakiyeye iade edildi.', 'success'); emit('billing-changed'); load(); }
+                        } })) : null) }
+                ], data.withdrawals, { empty: 'Bu filtrede çekim talebi yok.' }),
+                pager({ offset, limit: PAGE, count: data.withdrawals.length, total: data.total, onChange: n => { offset = n; load(); } }));
+            }
+        } catch (error) { clear(box, h('div', { class: 'card-body' }, errorBox(error))); }
+    }
+
+    paintSeg();
+    append(root,
+        head('İadeler & Çekimler', 'Müşterilerin kalan süre iadesi taleplerini ve bakiye çekme taleplerini yönetin. Onaylanan her işlem için numaralı makbuz kesilir.', [
+            linkBtn('İade ayarları', '#/admin/settings', { iconName: 'settings' })]),
+        card({ title: 'Talepler', iconName: 'refresh', actions: [statusSeg, seg], bodyClass: 'tight', body: box }));
+    load();
+    autoRefresh(onCleanup, () => { if (status === 'pending' && offset === 0) load(); }, 30000);
 }
 
 // ---------------------------------------------------------------------------
@@ -895,7 +1037,8 @@ const SETTING_GROUPS = [
     ['Genel', 'settings', ['site_name', 'support_contact', 'currency']],
     ['Üyelik ve erişim', 'users', ['registration_enabled', 'maintenance_mode', 'maintenance_message']],
     ['Ödeme', 'wallet', ['iban_details', 'min_deposit']],
-    ['Abonelik kuralları', 'clock', ['renewal_period_discounts', 'grace_days', 'global_free_limit', 'pool_ports']]
+    ['Abonelik kuralları', 'clock', ['renewal_period_discounts', 'grace_days', 'global_free_limit', 'pool_ports']],
+    ['İade, çekim ve makbuz', 'receipt', ['refund_enabled', 'refund_fee_percent', 'refund_min_amount', 'withdrawal_enabled', 'withdrawal_min_amount', 'receipt_prefix', 'seller_info']]
 ];
 
 async function renderSettings({ root, onCleanup }) {

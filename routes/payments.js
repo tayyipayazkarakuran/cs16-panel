@@ -1,4 +1,5 @@
 const express = require('express');
+const security = require('../security');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
@@ -68,6 +69,62 @@ function requireAdmin(req, res, next) {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+//  Payment intents: "renew my server once this transfer is approved"
+// ---------------------------------------------------------------------------
+
+const INTENT_MONTHS = [1, 3, 6, 12];
+
+/** Shape-only validation (pure, unit-tested). */
+function parseIntent(raw) {
+    if (raw === undefined || raw === null || raw === '') return null;
+    let data = raw;
+    if (typeof raw === 'string') {
+        try { data = JSON.parse(raw); } catch (_) { throw Object.assign(new Error('Geçersiz ödeme amacı.'), { statusCode: 400 }); }
+    }
+    if (!data || data.type !== 'renew') throw Object.assign(new Error('Desteklenmeyen ödeme amacı.'), { statusCode: 400 });
+    const months = parseInt(data.months, 10);
+    if (!INTENT_MONTHS.includes(months)) throw Object.assign(new Error('Geçersiz dönem.'), { statusCode: 400 });
+    const serverId = String(data.serverId || '');
+    if (!/^[a-f0-9]{12,64}$/i.test(serverId)) throw Object.assign(new Error('Geçersiz sunucu.'), { statusCode: 400 });
+    const plan = data.plan ? String(data.plan).slice(0, 32) : null;
+    const coupon = data.coupon ? String(data.coupon).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32).toUpperCase() : null;
+    return { type: 'renew', serverId, months, plan, coupon };
+}
+
+async function validateIntent(req, raw) {
+    const intent = parseIntent(raw);
+    if (!intent) return null;
+    const record = await req.panelDb.requireServerAccess(req.user, req.docker, intent.serverId, { allowSuspended: true });
+    if (Number(record.owner_id) !== Number(req.user.id)) throw Object.assign(new Error('Bu sunucu size ait değil.'), { statusCode: 403 });
+    // Store the stable DB id: the container id changes when a server is recreated.
+    return { ...intent, serverDbId: record.id };
+}
+
+/** Run a stored intent after the deposit is credited; failures never undo the deposit. */
+async function runIntent(req, result) {
+    const intent = result.intent;
+    if (!intent || intent.type !== 'renew') return null;
+    const billing = require('../billingService');
+    try {
+        const record = intent.serverDbId ? await req.panelDb.getServerById(intent.serverDbId) : await req.panelDb.getServerByContainerId(intent.serverId);
+        if (!record || Number(record.owner_id) !== Number(result.userId)) throw new Error('Sunucu artık hesabınızda değil.');
+        const owner = await req.panelDb.getUserById(result.userId);
+        const renewal = await billing.renewServer(req.docker, { id: owner.id, username: owner.username, role: 'user' }, record.container_id,
+            { months: intent.months, planSlug: intent.plan, couponCode: intent.coupon, ip: security.clientIp(req) });
+        return `Port ${renewal.record.port} ${intent.months} ay uzatıldı.`;
+    } catch (error) {
+        await req.panelDb.notify(result.userId, {
+            type: 'warning',
+            title: 'Ödeme yüklendi, süre otomatik uzatılamadı',
+            body: `${result.amount.toFixed(2)} bakiyenize eklendi ancak uzatma yapılamadı: ${error.message}. Sunucu sayfasından tekrar deneyebilirsiniz.`,
+            link: '#/billing'
+        });
+        return `Bakiye yüklendi; otomatik uzatma başarısız: ${error.message}`;
+    }
+}
+
 // GET /api/payments/iban - Fetch current dynamic IBAN details (User)
 router.get('/iban', async (req, res) => {
     try {
@@ -118,12 +175,20 @@ router.post('/report', upload.single('receipt'), async (req, res) => {
         }
 
         const receiptPath = req.file ? `/uploads/${req.file.filename}` : null;
+        let intent = null;
+        try {
+            intent = await validateIntent(req, req.body.intent);
+        } catch (intentError) {
+            removeUploadedReceipt(req);
+            return res.status(intentError.statusCode || 400).json({ error: intentError.message });
+        }
 
         const paymentId = await req.panelDb.createPaymentReport(
             req.user.id,
             parsedAmount,
             String(senderName).trim(),
-            receiptPath
+            receiptPath,
+            intent
         );
 
         await req.panelDb.notifyAdmins({
@@ -134,7 +199,9 @@ router.post('/report', upload.single('receipt'), async (req, res) => {
         });
         res.status(201).json({
             success: true,
-            message: 'Ödeme bildiriminiz alındı. Yönetici onayından sonra bakiyenize yansıyacak.',
+            message: intent
+                ? 'Ödeme bildiriminiz alındı. Onaylandığında bakiyenize yüklenecek ve sunucunuzun süresi otomatik uzatılacak.'
+                : 'Ödeme bildiriminiz alındı. Yönetici onayından sonra bakiyenize yansıyacak.',
             paymentId
         });
     } catch (e) {
@@ -216,7 +283,9 @@ router.post('/admin/:id/approve', requireAdmin, async (req, res) => {
             body: `${result.amount.toFixed(2)} bakiyenize eklendi.${body.note ? ` Not: ${String(body.note).slice(0, 200)}` : ''}`,
             link: '#/billing'
         });
-        res.json({ success: true, message: 'Ödeme onaylandı ve bakiye yüklendi.' });
+        let intentResult = null;
+        if (result.intent) intentResult = await runIntent(req, result);
+        res.json({ success: true, message: intentResult ? `Ödeme onaylandı. ${intentResult}` : 'Ödeme onaylandı ve bakiye yüklendi.', receipt: result.receipt });
     } catch (e) {
         res.status(e.statusCode || 400).json({ error: e.message });
     }
@@ -244,4 +313,4 @@ router.post('/admin/:id/reject', requireAdmin, async (req, res) => {
 });
 
 module.exports = router;
-module.exports._test = { hasAllowedSignature };
+module.exports._test = { hasAllowedSignature, parseIntent };

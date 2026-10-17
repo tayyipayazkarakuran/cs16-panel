@@ -40,7 +40,7 @@ async function issueSession(req, res, user) {
 // Public branding/pricing used by the login screen and landing page.
 router.get('/public/config', async (req, res) => {
     try {
-        const settings = await panelDb.getSettingsMap(['site_name', 'registration_enabled', 'support_contact', 'currency', 'maintenance_mode', 'maintenance_message']);
+        const settings = await panelDb.getSettingsMap(['site_name', 'registration_enabled', 'support_contact', 'currency', 'maintenance_mode', 'maintenance_message', 'refund_enabled', 'withdrawal_enabled']);
         const plans = await panelDb.listPlans({ activeOnly: true });
         res.set('Cache-Control', 'public, max-age=30');
         res.json({
@@ -49,6 +49,8 @@ router.get('/public/config', async (req, res) => {
             supportContact: settings.support_contact || '',
             currency: settings.currency || 'TL',
             maintenance: settings.maintenance_mode === '1' ? (settings.maintenance_message || 'Bakım') : null,
+            refundsDisabled: settings.refund_enabled === '0',
+            withdrawalsDisabled: settings.withdrawal_enabled === '0',
             gameHost: cfg.gameServerHost,
             plans: plans.map(p => ({
                 slug: p.slug, name: p.name, description: p.description, price: p.price,

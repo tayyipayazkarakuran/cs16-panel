@@ -1,5 +1,6 @@
 import { append, state, api, h, icon, btn, linkBtn, card, clear, field, input, select, fmtMoney, withBusy, toast, generatePassword, emptyState, navigate, loading, errorBox } from '../core.js';
 import { loadServers, loadSummary } from '../main.js';
+import { openDepositDialog } from '../components/deposit.js';
 
 const PERIODS = [1, 3, 6, 12];
 
@@ -100,9 +101,10 @@ export async function render({ root, setTitle, isCurrent }) {
                 h('div', { class: 'summary-line total' }, h('span', {}, 'Ödenecek'), h('span', {}, fmtMoney(q.total))),
                 h('div', { class: 'summary-line small' }, h('span', { class: 'muted' }, 'Süre'), h('span', {}, `${q.days} gün`)),
                 h('div', { class: 'summary-line small' }, h('span', { class: 'muted' }, 'Mevcut bakiye'), h('span', { class: enough ? '' : 'text-danger' }, fmtMoney(balance))),
-                enough ? null : h('div', { class: 'alert alert-warning mt-8' }, icon('wallet'),
-                    h('div', {}, h('strong', {}, 'Bakiye yetersiz'), h('p', {}, `${fmtMoney(q.total - balance)} daha yüklemeniz gerekiyor.`)),
-                    h('div', { class: 'alert-actions' }, linkBtn('Bakiye yükle', '#/billing', { size: 'sm', variant: 'primary' }))));
+                enough ? null : h('div', { class: 'alert alert-warning mt-2' }, icon('wallet'),
+                    h('div', {}, h('strong', {}, 'Bakiye yetersiz'), h('p', {}, `${fmtMoney(q.total - balance)} daha yüklemeniz gerekiyor. Havale bildiriminiz onaylanınca kiralamayı tamamlayabilirsiniz.`)),
+                    h('div', { class: 'alert-actions' }, btn('Havale bildir', { size: 'sm', variant: 'primary', iconName: 'send',
+                        onClick: () => openDepositDialog({ suggestedAmount: q.total - balance, title: 'Eksik tutarı havale ile yükleyin' }) }))));
             submit.disabled = !enough || !available.length;
             paintPeriods();
         } catch (error) {
