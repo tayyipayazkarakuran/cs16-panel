@@ -80,6 +80,8 @@ export async function api(path, { method = 'GET', body, form, timeoutMs = 120000
         const error = new ApiError(message, { status: res.status, code: data && data.code, data });
         if (res.status === 401 && !path.startsWith('/api/auth/')) emit('session-expired');
         if (res.status === 503 && error.code === 'MAINTENANCE') emit('maintenance', message);
+        if (res.status === 402 && error.code === 'SERVER_SUSPENDED') emit('paywall', error);
+        if (res.status === 402 && error.code === 'INSUFFICIENT_BALANCE') emit('insufficient-balance', error);
         if (res.status === 403 && error.code === 'ACCOUNT_SUSPENDED') emit('session-expired', message);
         throw error;
     }
@@ -491,13 +493,16 @@ export async function copyText(text) {
 // ---------------------------------------------------------------------------
 
 let toastRoot = null;
-export function toast(message, type = 'info', duration = 4500) {
+/** toast(message, type, duration, { action: { label, onClick } }) */
+export function toast(message, type = 'info', duration = 4500, { action = null } = {}) {
     if (!toastRoot) {
         toastRoot = h('div', { class: 'toasts', role: 'status', 'aria-live': 'polite' });
         document.body.appendChild(toastRoot);
     }
     const icons = { success: 'check', error: 'alert', warning: 'alert', info: 'info' };
-    const el = h('div', { class: `toast toast-${type}` }, icon(icons[type] || 'info'), h('div', { class: 'msg' }, message),
+    const el = h('div', { class: `toast toast-${type}` }, icon(icons[type] || 'info'),
+        h('div', { class: 'msg' }, message,
+            action ? h('div', { class: 'toast-action' }, btn(action.label, { size: 'xs', variant: 'primary', onClick: () => { el.remove(); action.onClick(); } })) : null),
         h('button', { type: 'button', class: 'toast-close', 'aria-label': 'Kapat', onClick: () => el.remove() }, icon('x', 'icon-sm')));
     toastRoot.appendChild(el);
     if (duration) setTimeout(() => el.remove(), type === 'error' ? Math.max(duration, 7000) : duration);
@@ -614,6 +619,13 @@ export function formDialog({ title, fields, submitText = 'Kaydet', onSubmit, siz
         };
 
         fields.forEach(f => {
+            if (f.type === 'custom') {
+                // Read-only content (e.g. a breakdown table); not part of the submitted values.
+                const wrapper = h('div', { class: 'field full' }, f.render());
+                wrappers[f.name] = wrapper;
+                grid.appendChild(wrapper);
+                return;
+            }
             let control;
             if (f.type === 'select') control = select(f.options || [], { name: f.name, value: f.value ?? '' });
             else if (f.type === 'textarea') control = h('textarea', { class: `textarea ${f.code ? 'code' : ''}`, name: f.name, value: f.value ?? '', rows: f.rows || 4, placeholder: f.placeholder || '', maxlength: f.maxlength });
@@ -653,6 +665,7 @@ export function formDialog({ title, fields, submitText = 'Kaydet', onSubmit, siz
             errorEl.hidden = true;
             let firstInvalid = null;
             fields.forEach(f => {
+                if (f.type === 'custom') return;
                 const wrapper = wrappers[f.name];
                 wrapper.classList.remove('invalid');
                 const old = wrapper.querySelector('.field-error');

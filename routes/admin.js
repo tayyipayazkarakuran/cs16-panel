@@ -25,7 +25,7 @@ router.use((req, res, next) => {
 function sendError(res, e) {
     const status = e.statusCode || 500;
     if (status >= 500) console.error('[Admin]', e);
-    res.status(status).json({ error: e.message });
+    res.status(status).json({ error: e.message, code: e.code });
 }
 
 function audit(req, action, targetType, targetId, details = null) {
@@ -75,10 +75,12 @@ router.get('/overview', async (req, res) => {
                       SUM(suspended = 1) AS suspended,
                       SUM(is_pool = 0 AND auto_renew = 1) AS autoRenew
                FROM panel_servers`),
+            // Net sales: purchases and renewals minus refunds (refunds are positive ledger entries).
             q(`SELECT COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL 30 DAY THEN -amount END), 0) AS sales30d,
                       COALESCE(SUM(-amount), 0) AS salesTotal,
-                      COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL 1 DAY THEN -amount END), 0) AS sales24h
-               FROM panel_transactions WHERE type IN ('purchase', 'renewal')`),
+                      COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL 1 DAY THEN -amount END), 0) AS sales24h,
+                      COALESCE(SUM(CASE WHEN type = 'refund' AND created_at >= NOW() - INTERVAL 30 DAY THEN amount END), 0) AS refunds30d
+               FROM panel_transactions WHERE type IN ('purchase', 'renewal', 'refund')`),
             q(`SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS amount FROM panel_payments WHERE status = 'pending'`),
             q(`SELECT s.plan_type AS plan, COUNT(*) AS count FROM panel_servers s WHERE s.is_pool = 0 GROUP BY s.plan_type`),
             q(`SELECT s.container_id, s.port, s.name, s.expires_at, s.auto_renew, u.username
@@ -92,7 +94,7 @@ router.get('/overview', async (req, res) => {
             req.docker.listContainers({ all: true }).catch(() => [])
         ]);
         const deposits = await q(`SELECT DATE(created_at) AS day, SUM(-amount) AS amount FROM panel_transactions
-                                  WHERE type IN ('purchase','renewal') AND created_at >= CURDATE() - INTERVAL 13 DAY
+                                  WHERE type IN ('purchase','renewal','refund') AND created_at >= CURDATE() - INTERVAL 13 DAY
                                   GROUP BY DATE(created_at) ORDER BY day`);
         const gameContainers = containers.filter(c => (c.Names || []).some(n => /cs16-server-\d+$/.test(n)));
         res.json({
@@ -101,6 +103,7 @@ router.get('/overview', async (req, res) => {
             revenue: revenue[0],
             salesByDay: deposits,
             pendingPayments: pending[0],
+            pendingBilling: await req.panelDb.countPendingBillingRequests(),
             planDistribution: plans,
             expiringSoon: expiring,
             recentUsers,

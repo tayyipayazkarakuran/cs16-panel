@@ -99,6 +99,7 @@ function renderServerNav(container) {
 function renderShell() {
     const serverNav = h('div', { class: 'nav' });
     const pendingCount = h('span');
+    const billingCount = h('span');
     const filterInput = h('input', {
         class: 'input', type: 'search', placeholder: 'Sunucu ara…', 'aria-label': 'Sunucu ara',
         value: serverFilter, onInput: e => { serverFilter = e.target.value; renderServerNav(serverNav); markActiveNav(); }
@@ -110,6 +111,7 @@ function renderShell() {
         navLink('/admin/users', 'Kullanıcılar', 'users'),
         navLink('/admin/servers', 'Tüm Sunucular', 'server'),
         h('a', { class: 'nav-item', href: '#/admin/payments', dataset: { path: '/admin/payments' } }, icon('receipt'), h('span', { class: 'label' }, 'Ödemeler'), pendingCount),
+        h('a', { class: 'nav-item', href: '#/admin/refunds', dataset: { path: '/admin/refunds' } }, icon('refresh'), h('span', { class: 'label' }, 'İadeler & Çekimler'), billingCount),
         navLink('/admin/transactions', 'Hesap Hareketleri', 'activity'),
         navLink('/admin/plans', 'Paketler & Kuponlar', 'tag'),
         navLink('/admin/announcements', 'Duyurular', 'megaphone'),
@@ -182,8 +184,13 @@ function renderShell() {
             const count = (data.payments || []).length;
             clear(pendingCount, count ? h('span', { class: 'count-pill' }, String(count)) : null);
         }).catch(() => {});
+        const paintBilling = () => api('/api/admin/refunds/counts').then(c => {
+            const total = (c.refunds || 0) + (c.withdrawals || 0);
+            clear(billingCount, total ? h('span', { class: 'count-pill' }, String(total)) : null);
+        }).catch(() => {});
         paintPending();
-        cleanupsGlobal.push(on('payments-changed', paintPending), on('summary-updated', paintPending));
+        paintBilling();
+        cleanupsGlobal.push(on('payments-changed', paintPending), on('summary-updated', paintPending), on('billing-changed', paintBilling), on('summary-updated', paintBilling));
     }
     // Close the mobile drawer after navigating.
     sidebar.addEventListener('click', e => { if (e.target.closest('a')) setDrawer(false); });
@@ -390,6 +397,15 @@ on('session-expired', message => {
     if (!state.user) return;
     endSession(typeof message === 'string' ? message : 'Oturumunuzun süresi doldu. Lütfen tekrar giriş yapın.');
     navigate('/login');
+});
+
+// Billing errors from any screen get a direct way to fix them.
+on('insufficient-balance', error => {
+    toast(error.message, 'warning', 9000, { action: { label: 'Bakiye yükle', onClick: () => import('./components/deposit.js').then(m => m.openDepositDialog()) } });
+});
+on('paywall', () => {
+    // The server list carries the suspension; the server page re-routes to its paywall.
+    loadServers().catch(() => {});
 });
 
 on('maintenance', message => {

@@ -45,7 +45,20 @@ async function suspendForExpiry(docker, server) {
         link: `#/servers/${server.container_id}`
     });
     await panelDb.logAudit({ action: 'server.suspend_expired', targetType: 'server', targetId: server.port });
+    // Custom domains stop resolving to a suspended site.
+    try { await phpSite.writeDomainMap(); } catch (_) { /* best effort */ }
 }
+
+/** When a suspended-for-expiry server will be deleted (or null). */
+function deletionDate(server, graceDays) {
+    if (!server.suspended || server.suspended_reason !== 'expired' || !server.expires_at) return null;
+    return new Date(new Date(server.expires_at).getTime() + graceDays * 86400000);
+}
+
+const DELETION_WARNINGS = [
+    { stage: 1, withinHours: 48 },
+    { stage: 2, withinHours: 24 }
+];
 
 async function runLifecycle(docker) {
     if (running) return;
@@ -102,6 +115,22 @@ async function runLifecycle(docker) {
                     continue;
                 }
 
+                const deletesAt = deletionDate(server, graceDays);
+                if (deletesAt && deletesAt.getTime() > now) {
+                    const hoursLeft = (deletesAt.getTime() - now) / 3600000;
+                    const warn = DELETION_WARNINGS.filter(w => hoursLeft <= w.withinHours && (server.deletion_notice_stage || 0) < w.stage).pop();
+                    if (warn) {
+                        await panelDb.updateServerContainer(server.container_id, { deletion_notice_stage: warn.stage });
+                        await panelDb.notify(server.owner_id, {
+                            type: 'danger',
+                            title: `Port ${server.port} ${Math.max(1, Math.round(hoursLeft))} saat içinde silinecek`,
+                            body: `Süreyi uzatmazsanız ${deletesAt.toLocaleString('tr-TR')} tarihinde tüm dosyalar, veritabanı ve web sitesi kalıcı olarak silinir.`,
+                            link: `#/servers/${server.container_id}`
+                        });
+                    }
+                    continue;
+                }
+
                 if (server.suspended_reason === 'expired' && now - expiresAt > graceDays * 86400000) {
                     console.log(`[Lifecycle] Reclaiming expired server on port ${server.port}`);
                     await destroyServerResources(docker, server);
@@ -127,6 +156,7 @@ async function runLifecycle(docker) {
 }
 
 module.exports = {
+    deletionDate,
     runLifecycle,
     destroyServerResources,
     suspendForExpiry

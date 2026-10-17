@@ -816,3 +816,26 @@ a.pool-slot:hover { border-color: var(--border-hover); text-decoration: none; }
 /* View-specific helpers */
 .uppercase { text-transform: uppercase; }
 .iban-box { white-space: pre-wrap; color: var(--text); font-size: var(--fs-md); }
+
+/* Billing: deposit dialog, receipts */
+.toast-action { margin-top: var(--sp-2); }
+.deposit-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--sp-6); }
+.receipt-doc { display: flex; flex-direction: column; gap: var(--sp-5); }
+.receipt-top { display: flex; justify-content: space-between; gap: var(--sp-4); flex-wrap: wrap; padding-bottom: var(--sp-4); border-bottom: 1px solid var(--border); }
+.receipt-seller { font-size: var(--fs-lg); }
+.receipt-number { font-size: var(--fs-lg); font-weight: 700; }
+.receipt-lines tfoot th { font-size: var(--fs-base); color: var(--text); text-transform: none; letter-spacing: 0; border-top: 1px solid var(--border-strong); }
+.refund-breakdown { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.countdown { font-size: var(--fs-2xl); font-weight: 800; font-variant-numeric: tabular-nums; color: var(--danger); letter-spacing: -0.02em; }
+@media (max-width: 720px) {
+    .deposit-grid { grid-template-columns: minmax(0, 1fr); gap: var(--sp-4); }
+}
+@media print {
+    body.printing-receipt { background: #fff; }
+    body.printing-receipt > *:not(.modal-backdrop) { display: none !important; }
+    body.printing-receipt .modal-backdrop { position: static; background: none; padding: 0; display: block; }
+    body.printing-receipt .modal { max-width: none; max-height: none; height: auto; border: 0; box-shadow: none; background: #fff; color: #000; }
+    body.printing-receipt .modal-head, body.printing-receipt .modal-foot { display: none; }
+    body.printing-receipt .modal-body { overflow: visible; padding: 0; }
+    body.printing-receipt .receipt-doc, body.printing-receipt .receipt-doc * { color: #000 !important; background: #fff !important; border-color: #bbb !important; }
+}

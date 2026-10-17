@@ -64,7 +64,7 @@ function invalidateLive(containerId) {
     liveCache.delete(containerId);
 }
 
-async function serializeServer(req, record, summary, plansBySlug) {
+async function serializeServer(req, record, summary, plansBySlug, { graceDays = 3 } = {}) {
     const env = {};
     let inspect = null;
     let live = { online: false };
@@ -107,6 +107,7 @@ async function serializeServer(req, record, summary, plansBySlug) {
         auto_renew: !!record.auto_renew,
         suspended: !!record.suspended,
         suspended_reason: record.suspended_reason || null,
+        deletes_at: (() => { const d = require('../lifecycleService').deletionDate(record, graceDays); return d ? d.toISOString() : null; })(),
         is_pool: !!record.is_pool,
         protected: isProtectedPort(port),
         sql: record.db_name ? {
@@ -125,11 +126,13 @@ async function serializeServer(req, record, summary, plansBySlug) {
 // GET /api/servers — servers the user can manage (admins: everything)
 router.get('/', async (req, res) => {
     try {
-        const [containers, records, plans] = await Promise.all([
+        const [containers, records, plans, graceSetting] = await Promise.all([
             req.docker.listContainers({ all: true }),
             req.panelDb.listServersForUser(req.user),
-            req.panelDb.listPlans({ activeOnly: false })
+            req.panelDb.listPlans({ activeOnly: false }),
+            req.panelDb.getSetting('grace_days')
         ]);
+        const graceDays = parseInt(graceSetting || '3', 10);
         const plansBySlug = new Map(plans.map(p => [p.slug, p]));
         const containersById = new Map(containers.map(c => [c.Id, c]));
         const known = new Set(records.map(r => r.container_id));
@@ -148,7 +151,7 @@ router.get('/', async (req, res) => {
         }
 
         const list = await Promise.all(records.map(record =>
-            serializeServer(req, record, containersById.get(record.container_id), plansBySlug)
+            serializeServer(req, record, containersById.get(record.container_id), plansBySlug, { graceDays })
                 .catch(err => { console.error(`Server ${record.port}:`, err.message); return null; })
         ));
         res.json(list.filter(Boolean).sort((a, b) => a.port - b.port));
@@ -212,6 +215,18 @@ router.post('/:id/renew', async (req, res) => {
             containerId: result.record.container_id,
             quote: result.quote
         });
+    } catch (e) {
+        routeError(res, e);
+    }
+});
+
+// GET /api/servers/:id/refund-quote — prorated refund for the unused paid time
+router.get('/:id/refund-quote', async (req, res) => {
+    try {
+        const record = await req.panelDb.requireServerAccess(req.user, req.docker, req.params.id, { allowSuspended: true });
+        const quote = await require('../refundService').quoteForServer(record);
+        const [pending] = await req.panelDb.assertPool().query("SELECT id, created_at FROM panel_refund_requests WHERE server_id = ? AND status = 'pending' LIMIT 1", [record.id]);
+        res.json({ success: true, quote, pendingRequest: pending[0] || null });
     } catch (e) {
         routeError(res, e);
     }
