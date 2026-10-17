@@ -3,8 +3,12 @@ import { append, state, api, h, clear, icon, btn, linkBtn, field, input, withBus
 function passwordField(id, label, { autocomplete = 'current-password', meter = false } = {}) {
     const control = input({ id, type: 'password', autocomplete, required: true, minlength: meter ? 8 : null });
     const toggle = btn(null, {
-        iconName: 'eye', title: 'Şifreyi göster', onClick: () => {
-            control.type = control.type === 'password' ? 'text' : 'password';
+        iconName: 'eye', title: 'Şifreyi göster', attrs: { 'aria-pressed': 'false' }, onClick: () => {
+            const show = control.type === 'password';
+            control.type = show ? 'text' : 'password';
+            toggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+            toggle.title = show ? 'Şifreyi gizle' : 'Şifreyi göster';
+            toggle.setAttribute('aria-label', toggle.title);
         }
     });
     const group = h('div', { class: 'input-group' }, control, toggle);
@@ -35,7 +39,7 @@ function visual(config) {
         ['shield', 'İzole ve güvenli barındırma']
     ];
     return h('div', { class: 'auth-visual' },
-        h('div', { class: 'brand' }, h('span', { class: 'brand-mark' }, 'CS'), h('span', {}, config.siteName || 'CS 1.6 Panel')),
+        h('a', { class: 'brand', href: '/landing', title: 'Ana sayfa' }, h('span', { class: 'brand-mark' }, 'CS'), h('span', {}, config.siteName || 'CS 1.6 Panel')),
         h('div', {},
             h('h2', {}, 'Counter-Strike 1.6 sunucunuz dakikalar içinde hazır.'),
             h('p', {}, 'Kirala, yönet, büyüt. Eklentiler, haritalar, oyuncular, web sitesi ve veritabanı tek panelde.'),
@@ -46,7 +50,11 @@ function visual(config) {
 export function renderAuth(root, mode, { query, onAuthenticated }) {
     const config = state.config || {};
     const panel = h('div', { class: 'auth-card' });
-    clear(root, h('div', { class: 'auth' }, visual(config), h('div', { class: 'auth-panel' }, panel)));
+    // On narrow screens the visual column is hidden, so the card carries the brand.
+    const mobileBrand = h('div', { class: 'auth-mobile-head' },
+        h('a', { class: 'brand', href: '/landing' }, h('span', { class: 'brand-mark' }, 'CS'), h('span', {}, config.siteName || 'CS 1.6 Panel')),
+        h('a', { class: 'small', href: '/landing' }, 'Ana sayfa'));
+    clear(root, h('div', { class: 'auth' }, visual(config), h('div', { class: 'auth-panel' }, h('div', { class: 'auth-column' }, mobileBrand, panel))));
     document.title = `${{ login: 'Giriş', register: 'Üye Ol', forgot: 'Şifremi Unuttum', reset: 'Yeni Şifre' }[mode]} · ${config.siteName || 'CS 1.6 Panel'}`;
 
     if (config.maintenance && mode !== 'login') {

@@ -1,34 +1,68 @@
-/* Landing page — builds on css/app.css tokens */
+/* Landing page — built entirely on the css/app.css design tokens. */
 .landing { background: var(--bg); }
-.l-wrap { width: min(1160px, calc(100% - 32px)); margin: 0 auto; }
-.l-header { position: sticky; top: 0; z-index: 20; background: rgba(15, 18, 14, .88); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
-.l-header-inner { display: flex; align-items: center; gap: 24px; height: 64px; }
-.l-header .brand { border: 0; padding: 0; height: auto; }
-.l-nav { display: flex; gap: 20px; margin-right: auto; }
-.l-nav a { color: var(--text-2); font-weight: 600; }
-.l-nav a:hover { color: var(--text); text-decoration: none; }
-.l-hero { padding: 96px 0 80px; border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, rgba(15, 18, 14, .55), var(--bg) 92%), url("assets/tactical-yard-v2.webp") center 35% / cover no-repeat; }
-.l-hero h1 { font-size: clamp(32px, 5.4vw, 56px); line-height: 1.08; letter-spacing: -0.03em; margin: 18px 0 16px; max-width: 760px; }
-.l-hero .lead { color: var(--text-2); font-size: 17px; max-width: 640px; margin-bottom: 28px; }
-.l-stats { display: flex; gap: 40px; margin-top: 44px; flex-wrap: wrap; }
-.l-stats dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; font-weight: 650; }
-.l-stats dd { margin: 4px 0 0; font-size: 30px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.l-wrap { width: min(1160px, calc(100% - 2 * var(--sp-4))); margin: 0 auto; }
+
+/* Header */
+.l-header { position: sticky; top: 0; z-index: var(--z-topbar); background: var(--topbar-bg); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+.l-header-inner { display: flex; align-items: center; gap: var(--sp-6); height: var(--topbar-h); }
+.l-header .brand { padding: 0; height: auto; flex: 0 1 auto; }
+.l-nav { display: flex; gap: var(--sp-1); margin-left: auto; }
+.l-nav a { display: inline-flex; align-items: center; height: var(--ctl-h); padding: 0 var(--sp-3); border-radius: var(--radius-sm); color: var(--text-2); font-weight: 600; font-size: var(--fs-md); }
+.l-nav a:hover { color: var(--text); background: var(--surface-2); text-decoration: none; }
+.l-header-inner > .btn-group { flex: none; flex-wrap: nowrap; }
+
+/* Hero */
+.l-hero { padding: 96px 0 var(--sp-10); border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(15, 18, 14, .6), var(--bg) 92%), url("assets/tactical-yard-v2.webp") center 35% / cover no-repeat; }
+.l-hero h1 { font-size: clamp(30px, 5.2vw, 54px); line-height: 1.1; letter-spacing: -0.03em; margin: var(--sp-4) 0; max-width: 760px; }
+.l-hero .lead { color: var(--text-2); font-size: var(--fs-lg); line-height: 1.6; max-width: 640px; margin-bottom: var(--sp-6); }
+.l-hero .btn-group .btn { height: 44px; padding: 0 var(--sp-5); font-size: var(--fs-base); }
+.l-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: var(--sp-10); max-width: 640px; background: rgba(24, 29, 22, .8); }
+.l-stats > div { padding: var(--sp-4) var(--sp-5); border-right: 1px solid var(--border); min-width: 0; }
+.l-stats > div:last-child { border-right: 0; }
+.l-stats dt { color: var(--muted); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
+.l-stats dd { margin: var(--sp-1) 0 0; font-size: var(--fs-2xl); font-weight: 800; font-variant-numeric: tabular-nums; }
+
+/* Sections */
 .l-section { padding: 72px 0; }
 .l-alt { background: var(--bg-elev); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.l-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+.l-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-4); margin-bottom: var(--sp-6); flex-wrap: wrap; }
 .l-section-head h2 { font-size: 26px; margin-bottom: 6px; }
-.l-features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.l-features .card { padding: 22px; gap: 8px; }
-.l-features h3 { font-size: 16px; }
-.l-features p { color: var(--text-2); font-size: 14px; }
+
+/* Features */
+.l-features { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--sp-4); }
+.l-feature { padding: var(--sp-5); gap: var(--sp-2); }
+.l-feature h3 { font-size: var(--fs-lg); margin-top: var(--sp-1); }
+.l-feature p { color: var(--text-2); font-size: var(--fs-md); line-height: 1.55; }
+.l-feature-icon { width: 40px; height: 40px; border-radius: var(--radius); display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+
+/* Pricing */
 .plan .btn { margin-top: auto; }
-.l-footer { border-top: 1px solid var(--border); padding: 28px 0; font-size: 13px; }
-.l-footer-inner { display: flex; gap: 16px; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+
+/* Footer */
+.l-footer { border-top: 1px solid var(--border); padding: var(--sp-6) 0; font-size: var(--fs-md); color: var(--text-2); }
+.l-footer-inner { display: flex; gap: var(--sp-4); justify-content: space-between; align-items: center; flex-wrap: wrap; }
+.l-footer-links { display: flex; gap: var(--sp-4); }
+
+@media (max-width: 1024px) {
+    .l-features { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 860px) {
     .l-nav { display: none; }
-    .l-header-inner { justify-content: space-between; }
-    .l-features { grid-template-columns: minmax(0, 1fr); }
-    .l-hero { padding: 64px 0 56px; }
-    .l-section { padding: 48px 0; }
+    .l-header-inner { justify-content: space-between; gap: var(--sp-3); }
+    .l-hero { padding: 56px 0 var(--sp-8); }
+    .l-section { padding: var(--sp-10) 0; }
+    .l-section-head h2 { font-size: var(--fs-xl); }
+}
+@media (max-width: 560px) {
+    .l-features { grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); }
+    /* Icon beside the text keeps the eight features to a compact list on phones. */
+    .l-feature { display: grid; grid-template-columns: 40px minmax(0, 1fr); column-gap: var(--sp-3); row-gap: var(--sp-1); padding: var(--sp-4); }
+    .l-feature-icon { grid-row: span 2; }
+    .l-feature h3 { margin-top: 0; font-size: var(--fs-base); }
+    .l-stats > div { padding: var(--sp-3); }
+    .l-stats dd { font-size: var(--fs-xl); }
+    .l-hero .btn-group { width: 100%; }
+    .l-hero .btn-group .btn { flex: 1 1 0; }
+    .l-footer-inner { flex-direction: column; align-items: flex-start; }
 }
