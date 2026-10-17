@@ -36,11 +36,13 @@
                 var address = s.ip + ':' + s.port;
                 var online = s.status === 'online';
                 rows.appendChild(el('tr', {}, [
-                    el('td', {}, [el('strong', { text: s.name })]),
-                    el('td', {}, [el('a', { href: 'steam://connect/' + address, class: 'mono', text: address })]),
-                    el('td', { text: s.map || '—' }),
+                    el('td', {}, [el('div', { class: 'cell-title' }, [el('strong', { text: s.name }), el('span', { class: 'mono', text: address })])]),
+                    el('td', { class: 'hide-sm', text: s.map || '—' }),
                     el('td', { class: 'num', text: online ? (s.players + ' / ' + s.maxplayers) : '—' }),
-                    el('td', {}, [el('span', { class: 'badge ' + (online ? 'badge-success' : 'badge-danger') }, [el('span', { class: 'dot ' + (online ? 'dot-online' : 'dot-offline') }), online ? 'Çevrimiçi' : 'Kapalı'])])
+                    el('td', {}, [el('span', { class: 'badge ' + (online ? 'badge-success' : 'badge-danger') }, [el('span', { class: 'dot ' + (online ? 'dot-online' : 'dot-offline') }), online ? 'Çevrimiçi' : 'Kapalı'])]),
+                    el('td', { class: 'actions' }, [online
+                        ? el('a', { class: 'btn btn-xs', href: 'steam://connect/' + address, text: 'Bağlan' })
+                        : el('span', { class: 'muted', text: '—' })])
                 ]));
             });
             document.getElementById('stat-servers').textContent = String(servers.filter(function (s) { return s.status === 'online'; }).length);

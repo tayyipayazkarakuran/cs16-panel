@@ -711,7 +711,7 @@ a.pool-slot:hover { border-color: var(--border-hover); text-decoration: none; }
 .auth { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
 .auth-visual {
     position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; padding: var(--sp-10);
-    background: linear-gradient(180deg, rgba(15, 18, 14, .25), rgba(15, 18, 14, .92)), url("../assets/tactical-yard-v2.webp") center / cover no-repeat, var(--surface);
+    background: linear-gradient(180deg, rgba(15, 18, 14, .45) 0%, rgba(15, 18, 14, .75) 45%, rgba(15, 18, 14, .95) 100%), url("../assets/tactical-yard-v2.webp") center / cover no-repeat, var(--surface);
     border-right: 1px solid var(--border);
 }
 .auth-visual .brand { padding: 0; height: auto; flex: none; }
@@ -721,7 +721,13 @@ a.pool-slot:hover { border-color: var(--border-hover); text-decoration: none; }
 .auth-points div { display: flex; gap: var(--sp-2); align-items: center; font-size: var(--fs-md); color: var(--text-2); }
 .auth-points .icon { color: var(--accent); }
 .auth-panel { display: flex; align-items: center; justify-content: center; padding: var(--sp-10) var(--sp-6); }
-.auth-card { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: var(--sp-5); }
+.auth-column { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: var(--sp-8); }
+.auth-card { width: 100%; display: flex; flex-direction: column; gap: var(--sp-5); }
+.full-page > .auth-card { max-width: 420px; }
+.auth-mobile-head { display: none; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.auth-mobile-head .brand { padding: 0; height: auto; flex: 0 1 auto; }
+.auth-visual .brand:hover { text-decoration: none; opacity: .9; }
+.input-group .btn[aria-pressed="true"] { color: var(--accent); }
 .auth-card h1 { font-size: 24px; }
 .auth-card .lead { color: var(--text-2); margin-top: 6px; }
 .auth-switch { text-align: center; color: var(--muted); font-size: var(--fs-md); }
@@ -751,6 +757,8 @@ a.pool-slot:hover { border-color: var(--border-hover); text-decoration: none; }
     .form-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .auth { grid-template-columns: minmax(0, 1fr); }
     .auth-visual { display: none; }
+    .auth-mobile-head { display: flex; }
+    .auth-panel { align-items: flex-start; }
     .split { grid-template-columns: minmax(0, 1fr); }
     .split .list { border-right: 0; border-bottom: 1px solid var(--border); max-height: 200px; }
 }
