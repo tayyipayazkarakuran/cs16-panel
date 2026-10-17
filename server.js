@@ -205,6 +205,7 @@ app.post('/api/auth/handoff', async (req, res) => {
 });
 
 app.use('/api/account', require('./routes/account'));
+app.use('/api/servers/:id/tasks', require('./routes/tasks'));
 app.use('/api/servers', require('./routes/servers'));
 app.use('/api/files', require('./routes/files'));
 app.use('/api/plugins', require('./routes/plugins'));
@@ -349,6 +350,8 @@ async function start() {
     const runLifecycle = () => lifecycle.runLifecycle(docker).catch(e => console.error('[Lifecycle]', e.message));
     timers.push(setInterval(runLifecycle, parseInt(process.env.LIFECYCLE_INTERVAL_MS || String(10 * 60 * 1000), 10)));
     setTimeout(runLifecycle, 15000);
+    const scheduler = require('./schedulerService');
+    timers.push(setInterval(() => scheduler.runDueTasks(docker).catch(e => console.error('[Scheduler]', e.message)), parseInt(process.env.SCHEDULER_INTERVAL_MS || '30000', 10)));
     timers.push(setInterval(() => panelDb.cleanupAuthHandoffs().catch(e => console.error('[Auth cleanup]', e.message)), 300000));
 
     server.listen(cfg.port, '0.0.0.0', () => {

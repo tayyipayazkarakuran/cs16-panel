@@ -1,12 +1,13 @@
 import { append,
-    state, api, h, clear, icon, btn, card, badge, fmtMoney, fmtDate, daysLeft, statusBadge, toast, toastError,
-    confirmDialog, openModal, withBusy, loading, errorBox, emptyState, copyable, copyText, switchControl, dropdown, menuItem,
+    state, api, h, clear, icon, btn, linkBtn, card, badge, fmtMoney, fmtDate, daysLeft, statusBadge, toast, toastError,
+    confirmDialog, openModal, withBusy, loading, errorBox, emptyState, copyable, copyText, switchControl, dropdown, menuItem, menuSep,
     on, input, field, select, navigate
 } from '../core.js';
 import { loadServers, loadSummary } from '../main.js';
 import * as tabs from './serverTabs.js';
 
 const TABS = [
+    { id: 'overview', label: 'Genel Bakış', icon: 'gauge' },
     { id: 'console', label: 'Konsol', icon: 'terminal' },
     { id: 'logs', label: 'Loglar', icon: 'list' },
     { id: 'files', label: 'Dosyalar', icon: 'folder' },
@@ -17,6 +18,7 @@ const TABS = [
     { id: 'website', label: 'Web Sitesi', icon: 'globe' },
     { id: 'database', label: 'Veritabanı', icon: 'database' },
     { id: 'fastdl', label: 'FastDL', icon: 'download' },
+    { id: 'tasks', label: 'Görevler', icon: 'calendar' },
     { id: 'settings', label: 'Ayarlar', icon: 'sliders' }
 ];
 
@@ -55,9 +57,9 @@ export function openRenewDialog(server) {
                     h('div', { class: 'summary-line total' }, h('span', {}, 'Toplam'), h('span', {}, fmtMoney(q.total))),
                     h('div', { class: 'summary-line small' }, h('span', { class: 'muted' }, 'Yeni bitiş tarihi'), h('span', {}, fmtDate(newExpiry))),
                     h('div', { class: 'summary-line small' }, h('span', { class: 'muted' }, 'Bakiyeniz'), h('span', { class: enough ? '' : 'text-danger' }, fmtMoney(state.user.balance))),
-                    choice.plan !== server.plan_type ? h('p', { class: 'small text-warning mt-8' }, 'Paket değişikliğinde slot sayısı güncellenir; sunucu kısa süreliğine yeniden başlatılır. Dosyalarınız korunur.') : null,
-                    enough ? null : h('div', { class: 'alert alert-warning mt-8' }, icon('wallet'), h('div', {}, h('strong', {}, 'Bakiye yetersiz'), h('p', {}, `${fmtMoney(q.total - state.user.balance)} eksik.`)),
-                        h('div', { class: 'alert-actions' }, h('a', { class: 'btn btn-sm btn-primary', href: '#/billing', onClick: () => modal.close() }, 'Bakiye yükle'))));
+                    choice.plan !== server.plan_type ? h('p', { class: 'small text-warning mt-2' }, 'Paket değişikliğinde slot sayısı güncellenir; sunucu kısa süreliğine yeniden başlatılır. Dosyalarınız korunur.') : null,
+                    enough ? null : h('div', { class: 'alert alert-warning mt-2' }, icon('wallet'), h('div', {}, h('strong', {}, 'Bakiye yetersiz'), h('p', {}, `${fmtMoney(q.total - state.user.balance)} eksik.`)),
+                        h('div', { class: 'alert-actions' }, linkBtn('Bakiye yükle', '#/billing', { size: 'sm', variant: 'primary', attrs: { onClick: () => modal.close() } }))));
                 payBtn.disabled = !enough;
             } catch (error) {
                 if (mine !== seq) return;
@@ -83,7 +85,7 @@ export function openRenewDialog(server) {
                 h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Dönem'), periodBox),
                 h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Kupon'),
                     h('div', { class: 'input-group' }, couponInput, btn('Uygula', { onClick: () => { choice.coupon = couponInput.value.trim().toUpperCase(); quote(); } }))),
-                h('hr', { style: { margin: '4px 0' } }),
+                h('hr', { class: 'mt-1 mb-2' }),
                 summary),
             footer: [btn('Vazgeç', { variant: 'ghost', onClick: () => modal.close(false) }), payBtn],
             onClose: result => resolve(result === true)
@@ -120,10 +122,31 @@ function subscriptionStrip(server) {
             isOwner ? btn(server.plan_is_trial ? 'Pakete yükselt' : 'Süreyi uzat', { variant: 'primary', size: 'sm', iconName: 'clock', onClick: () => openRenewDialog(server) }) : null));
 }
 
-function powerControls(server, refresh) {
+/** After a power action, poll quickly until the container reaches the expected state. */
+function settleState(serverId, expectRunning) {
+    let tries = 0;
+    const tick = async () => {
+        tries++;
+        const list = await loadServers().catch(() => null);
+        const s = list && list.find(x => x.id === serverId);
+        const settled = s && ((s.state === 'running') === expectRunning) && (!expectRunning || s.online || tries > 8);
+        if (!settled && tries < 15) setTimeout(tick, 2000);
+    };
+    setTimeout(tick, 1000);
+}
+
+function powerControls(server) {
     const running = server.state === 'running';
     const act = action => async e => {
         const button = e.currentTarget;
+        if (action !== 'start' && server.online && server.players > 0) {
+            const ok = await confirmDialog({
+                title: action === 'stop' ? 'Sunucuyu durdur' : 'Sunucuyu yeniden başlat',
+                message: `Sunucuda şu anda ${server.players} oyuncu var; bağlantıları kopacak. Devam edilsin mi?`,
+                confirmText: action === 'stop' ? 'Durdur' : 'Yeniden başlat', danger: action === 'stop'
+            });
+            if (!ok) return;
+        }
         await withBusy(button, async () => {
             try {
                 const data = await api(`/api/servers/${server.id}/${action}`, { method: 'POST', timeoutMs: 180000 });
@@ -131,7 +154,7 @@ function powerControls(server, refresh) {
                 if (data.containerId && data.containerId !== server.id) {
                     await loadServers();
                     navigate(`/servers/${data.containerId}`);
-                } else setTimeout(refresh, 1200);
+                } else settleState(server.id, action !== 'stop');
             } catch (error) { toastError(error); }
         });
     };
@@ -154,7 +177,7 @@ function powerControls(server, refresh) {
         }, { iconName: 'refresh', danger: true }),
         menuItem('Adresi kopyala', () => { close(); copyText(server.address); }, { iconName: 'copy' }),
         menuItem('Steam ile bağlan', () => { close(); window.location.href = `steam://connect/${server.address}`; }, { iconName: 'play' }),
-        state.user.role === 'admin' && !server.protected ? [h('div', { class: 'sep' }), menuItem('Sunucuyu sil', async () => {
+        state.user.role === 'admin' && !server.protected ? [menuSep(), menuItem('Sunucuyu sil', async () => {
             close();
             const ok = await confirmDialog({ title: 'Sunucuyu sil', message: `Port ${server.port} ve tüm kaynakları (dosyalar, veritabanı, web sitesi, FastDL) kalıcı olarak silinecek.`, confirmText: 'Kalıcı olarak sil', danger: true, requireText: String(server.port) });
             if (!ok) return;
@@ -189,9 +212,9 @@ function paywall(server) {
         h('p', {}, expired
             ? 'Sunucunuz durduruldu ve yönetim araçları kilitlendi. Süreyi uzattığınız anda sunucu otomatik olarak yeniden başlar; dosyalarınız, veritabanınız ve web siteniz olduğu gibi korunur. Askı süresi içinde yenilenmezse tüm veriler silinir.'
             : `Bu sunucu yönetici tarafından askıya alındı${server.suspended_reason && server.suspended_reason !== 'admin' ? ` (sebep: ${server.suspended_reason})` : ''}. Ayrıntı için destek ile iletişime geçin.`),
-        expired ? h('div', { class: 'btn-group', style: { justifyContent: 'center' } },
+        expired ? h('div', { class: 'btn-group center' },
             btn('Şimdi uzat', { variant: 'primary', iconName: 'clock', onClick: () => openRenewDialog(server) }),
-            h('a', { class: 'btn', href: '#/billing' }, icon('wallet'), 'Bakiye yükle')) : null,
+            linkBtn('Bakiye yükle', '#/billing', { iconName: 'wallet' })) : null,
         state.config && state.config.supportContact ? h('p', { class: 'small muted' }, `Destek: ${state.config.supportContact}`) : null) });
 }
 
@@ -205,15 +228,14 @@ export async function render({ root, params, setTitle, onCleanup, isCurrent }) {
         clear(root);
     }
     if (!server) {
-        root.appendChild(card({ body: emptyState({ iconName: 'server', title: 'Sunucu bulunamadı', text: 'Sunucu silinmiş, sıfırlanmış veya erişim yetkiniz kaldırılmış olabilir.', action: h('a', { class: 'btn btn-primary', href: '#/' }, 'Panele dön') }) }));
+        root.appendChild(card({ body: emptyState({ iconName: 'server', title: 'Sunucu bulunamadı', text: 'Sunucu silinmiş, sıfırlanmış veya erişim yetkiniz kaldırılmış olabilir.', action: linkBtn('Panele dön', '#/', { variant: 'primary' }) }) }));
         setTitle('Sunucu bulunamadı');
         return;
     }
-    const tabId = TABS.some(t => t.id === params.tab) ? params.tab : 'console';
+    const tabId = TABS.some(t => t.id === params.tab) ? params.tab : 'overview';
     setTitle(server.name, [{ label: 'Sunucular', href: '#/' }]);
 
     const header = h('section', { class: 'card' });
-    const refresh = () => loadServers().catch(() => {});
     function paintHeader() {
         const s = state.servers.find(x => x.id === params.id) || server;
         server = s;
@@ -222,22 +244,19 @@ export async function render({ root, params, setTitle, onCleanup, isCurrent }) {
                 h('div', { class: 'identity' },
                     h('h1', {}, s.name),
                     h('div', { class: 'meta' }, statusBadge(s), copyable(s.address), s.protected ? badge('Korumalı', 'info') : null, s.is_pool ? badge('Havuz', '') : null)),
-                s.suspended && state.user.role !== 'admin' ? null : powerControls(s, refresh)),
+                s.suspended && state.user.role !== 'admin' ? null : powerControls(s)),
             s.is_pool ? null : subscriptionStrip(s),
             s.suspended ? null : statsStrip(s));
     }
     paintHeader();
-    onCleanup(on('servers-updated', () => {
-        const s = state.servers.find(x => x.id === params.id);
-        if (!s) return;
-        const suspendedChanged = !!s.suspended !== !!server.suspended;
-        paintHeader();
-        if (suspendedChanged) navigate(`/servers/${s.id}/${tabId}`);
-    }));
     root.appendChild(header);
 
     if (server.suspended && state.user.role !== 'admin') {
         root.appendChild(paywall(server));
+        onCleanup(on('servers-updated', () => {
+            const s = state.servers.find(x => x.id === params.id);
+            if (s && !s.suspended) navigate(`/servers/${s.id}/${tabId}`);
+        }));
         return;
     }
     if (server.suspended) {
@@ -246,25 +265,58 @@ export async function render({ root, params, setTitle, onCleanup, isCurrent }) {
 
     const tabBar = h('nav', { class: 'tabs', role: 'tablist', 'aria-label': 'Sunucu bölümleri' },
         TABS.map(t => h('a', { class: `tab ${t.id === tabId ? 'active' : ''}`, role: 'tab', 'aria-selected': t.id === tabId ? 'true' : 'false', href: `#/servers/${server.id}/${t.id}` }, icon(t.icon, 'icon-sm'), t.label)));
+    const tabWrap = h('div', { class: 'tabs-wrap' }, tabBar);
     const panel = h('div', { class: 'stack', role: 'tabpanel' });
-    append(root, tabBar, panel);
+    append(root, tabWrap, panel);
+    const updateScrollHint = () => tabWrap.classList.toggle('has-more', tabBar.scrollLeft + tabBar.clientWidth < tabBar.scrollWidth - 4);
+    tabBar.addEventListener('scroll', updateScrollHint, { passive: true });
+    window.addEventListener('resize', updateScrollHint);
+    onCleanup(() => window.removeEventListener('resize', updateScrollHint));
     // Keep the active tab visible on narrow screens.
     setTimeout(() => {
         const active = tabBar.querySelector('.active');
         if (active && tabBar.scrollWidth > tabBar.clientWidth) {
             tabBar.scrollLeft = Math.max(0, active.offsetLeft - (tabBar.clientWidth - active.offsetWidth) / 2);
         }
+        updateScrollHint();
     }, 0);
 
-    const ctx = { server, panel, onCleanup, isCurrent, refreshServers: refresh };
     const renderers = {
-        console: tabs.consoleTab, logs: tabs.logsTab, files: tabs.filesTab, plugins: tabs.pluginsTab, maps: tabs.mapsTab,
+        overview: tabs.overviewTab, console: tabs.consoleTab, logs: tabs.logsTab, files: tabs.filesTab, plugins: tabs.pluginsTab, maps: tabs.mapsTab,
         players: tabs.playersTab, admins: tabs.adminsTab, website: tabs.websiteTab, database: tabs.databaseTab,
-        fastdl: tabs.fastdlTab, settings: tabs.settingsTab
+        fastdl: tabs.fastdlTab, tasks: tabs.tasksTab, settings: tabs.settingsTab
     };
-    try {
-        await renderers[tabId](ctx);
-    } catch (error) {
-        panel.appendChild(errorBox(error));
+    // Tabs that show "server offline" states are re-rendered when the
+    // running state flips, so buttons never stay disabled after a start.
+    const STATE_SENSITIVE = new Set(['plugins', 'maps', 'players', 'admins', 'settings', 'console', 'overview']);
+    let tabCleanups = [];
+    let renderedState = server.state;
+    async function renderTab() {
+        tabCleanups.forEach(fn => { try { fn(); } catch (_) { /* ignore */ } });
+        tabCleanups = [];
+        clear(panel);
+        const ctx = {
+            server, panel, isCurrent,
+            onCleanup: fn => tabCleanups.push(fn),
+            refreshServers: () => loadServers().catch(() => {})
+        };
+        try {
+            await renderers[tabId](ctx);
+        } catch (error) {
+            panel.appendChild(errorBox(error));
+        }
     }
+    onCleanup(() => tabCleanups.forEach(fn => { try { fn(); } catch (_) { /* ignore */ } }));
+    onCleanup(on('servers-updated', () => {
+        const s = state.servers.find(x => x.id === params.id);
+        if (!s) return;
+        if (!!s.suspended !== !!server.suspended) { navigate(`/servers/${s.id}/${tabId}`); return; }
+        paintHeader();
+        const runningNow = s.state === 'running';
+        if (runningNow !== (renderedState === 'running') && STATE_SENSITIVE.has(tabId)) {
+            renderedState = s.state;
+            renderTab();
+        }
+    }));
+    await renderTab();
 }

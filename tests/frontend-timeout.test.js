@@ -40,3 +40,14 @@ test('frontend never renders API data through innerHTML or inline handlers', () 
     const html = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'index.html'), 'utf8');
     assert.doesNotMatch(html, /<script>(?!<\/script>)/, 'index.html must not contain inline scripts (CSP)');
 });
+
+test('layout comes from the design system, not ad-hoc inline styles', () => {
+    // Only computed geometry (progress widths, tree indentation, chart heights) may be inline.
+    const inline = appSource.match(/style:\s*\{[^}]*\}/g) || [];
+    const ad_hoc = inline.filter(s => !/^style:\s*\{\s*(width|height|paddingLeft):\s*`/.test(s));
+    assert.deepEqual(ad_hoc, []);
+    const css = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'css', 'app.css'), 'utf8');
+    for (const token of ['--ctl-h:', '--ctl-h-sm:', '--ctl-h-xs:', '--fs-md:', '--sp-4:']) assert.ok(css.includes(token), `${token} token missing`);
+    assert.match(css, /\.btn-xs\.btn-icon\s*\{/, 'extra-small icon buttons must be square');
+    assert.match(css, /\.btn-danger-solid:hover/, 'solid danger buttons need their own hover state');
+});

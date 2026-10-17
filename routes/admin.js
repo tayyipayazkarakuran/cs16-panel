@@ -8,6 +8,9 @@ const gameContainer = require('../gameContainer');
 const queryHelper = require('../queryHelper');
 const poolService = require('../poolService');
 const lifecycle = require('../lifecycleService');
+const os = require('os');
+const fs = require('fs');
+const serverOps = require('../serverOps');
 const { isProtectedPort, assertDestructiveOperationAllowed } = require('../serverProtection');
 
 const router = express.Router();
@@ -116,7 +119,14 @@ router.get('/overview', async (req, res) => {
 
 router.get('/users', async (req, res) => {
     try {
-        res.json({ success: true, users: await req.panelDb.listAllUsers({ search: req.query.search || '', limit: req.query.limit || 500 }) });
+        const search = req.query.search || '';
+        const limit = Math.min(parseInt(req.query.limit, 10) || 50, 500);
+        const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+        const [users, total] = await Promise.all([
+            req.panelDb.listAllUsers({ search, limit, offset }),
+            req.panelDb.countUsers({ search })
+        ]);
+        res.json({ success: true, users, total, limit, offset });
     } catch (e) {
         sendError(res, e);
     }
@@ -470,8 +480,28 @@ router.get('/infra', async (req, res) => {
             const [rows] = await req.panelDb.assertPool().query('SELECT VERSION() AS v');
             mysqlVersion = rows[0].v;
         } catch (_) { /* reported as offline */ }
+        let disk = null;
+        try {
+            const st = fs.statfsSync(fs.existsSync(cfg.fastdl.path) ? cfg.fastdl.path : '/');
+            disk = { total: st.blocks * st.bsize, free: st.bavail * st.bsize };
+        } catch (_) { /* statfs unsupported */ }
+        const containers = await infraStatus(req.docker);
+        const all = await req.docker.listContainers({ all: true }).catch(() => []);
+        await Promise.all(containers.map(async c => {
+            const found = all.find(x => (x.Names || []).includes(`/${c.name}`));
+            c.stats = found && found.State === 'running' ? await serverOps.sampleStats(req.docker, found.Id) : null;
+        }));
         res.json({
-            containers: await infraStatus(req.docker),
+            host: {
+                hostname: os.hostname(),
+                cpus: os.cpus().length,
+                loadavg: os.loadavg(),
+                totalmem: os.totalmem(),
+                freemem: os.freemem(),
+                uptimeSeconds: Math.round(os.uptime()),
+                disk
+            },
+            containers,
             mysql: { online: !!mysqlVersion, version: mysqlVersion, internal: cfg.mysqlEndpoints().internal, external: cfg.mysqlEndpoints().external },
             fastdl: { baseUrl: cfg.fastdlBaseUrl(), path: cfg.fastdl.path },
             php: { baseUrl: cfg.php.publicBaseUrl, path: cfg.php.wwwPath },
@@ -493,6 +523,32 @@ router.post('/infra/:name/restart', async (req, res) => {
         await req.docker.getContainer(c.Id).restart();
         await audit(req, 'infra.restart', 'container', name);
         res.json({ success: true, message: `${name} yeniden başlatıldı.` });
+    } catch (e) {
+        sendError(res, e);
+    }
+});
+
+// Live CPU/RAM of every running game server (sampled in parallel).
+router.get('/resources', async (req, res) => {
+    try {
+        const [containers, records] = await Promise.all([
+            req.docker.listContainers({ all: true }).catch(() => []),
+            req.panelDb.assertPool().query(
+                'SELECT s.container_id, s.port, s.name, s.is_pool, u.username AS owner FROM panel_servers s JOIN panel_users u ON u.id = s.owner_id'
+            ).then(r => r[0])
+        ]);
+        const running = new Map(containers.filter(c => c.State === 'running').map(c => [c.Id, c]));
+        const rows = records.filter(r => running.has(r.container_id));
+        const samples = await Promise.all(rows.map(r => serverOps.sampleStats(req.docker, r.container_id, 6000)));
+        res.json({
+            servers: rows.map((r, i) => ({
+                containerId: r.container_id, port: r.port, name: r.name, owner: r.is_pool ? null : r.owner, isPool: !!r.is_pool,
+                cpu: samples[i] ? samples[i].cpu.percent : null,
+                memory: samples[i] ? samples[i].memory.used : null,
+                network: samples[i] ? samples[i].network : null
+            })).sort((a, b) => (b.cpu || 0) - (a.cpu || 0)),
+            stopped: records.length - rows.length
+        });
     } catch (e) {
         sendError(res, e);
     }
@@ -573,7 +629,7 @@ router.post('/coupons', async (req, res) => {
 
 router.put('/coupons/:id', async (req, res) => {
     try {
-        await req.panelDb.setCouponActive(req.params.id, !!(req.body && req.body.active));
+        await req.panelDb.updateCoupon(req.params.id, req.body || {});
         await audit(req, 'coupon.update', 'coupon', req.params.id, req.body);
         res.json({ success: true });
     } catch (e) {
@@ -618,7 +674,8 @@ router.post('/announcements', async (req, res) => {
 
 router.put('/announcements/:id', async (req, res) => {
     try {
-        await req.panelDb.setAnnouncementActive(req.params.id, !!(req.body && req.body.active));
+        await req.panelDb.updateAnnouncement(req.params.id, req.body || {});
+        await audit(req, 'announcement.update', 'announcement', req.params.id, { fields: Object.keys(req.body || {}) });
         res.json({ success: true });
     } catch (e) {
         sendError(res, e);

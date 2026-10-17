@@ -198,6 +198,8 @@ async function provisionFreshServer(docker, slot, { maxPlayers, startMap = 'de_d
     const record = await panelDb.getServerById(slot.id);
     await gameContainer.removeContainerQuietly(docker, record.container_id);
     if (!keepVolume) {
+        // A slot changing hands must not inherit the previous tenant's schedules.
+        await panelDb.deleteTasksForServer(record.id).catch(() => {});
         await gameContainer.removeVolumeWithRetry(docker, record.port);
         await panelDb.dropSqlAccount(record.db_name, record.db_username).catch(() => {});
         fastdl.ensureCleanFastdlTree(record.port);

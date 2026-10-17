@@ -515,6 +515,34 @@ const MIGRATIONS = [
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             `);
         }
+    },
+    {
+        version: 5,
+        name: 'scheduled server tasks',
+        async up() {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS panel_scheduled_tasks (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    server_id INT NOT NULL,
+                    name VARCHAR(80) NOT NULL,
+                    action VARCHAR(16) NOT NULL,
+                    payload VARCHAR(255) NULL,
+                    schedule_type VARCHAR(16) NOT NULL,
+                    time_of_day CHAR(5) NULL,
+                    weekdays VARCHAR(20) NULL,
+                    interval_minutes INT NULL,
+                    enabled TINYINT(1) NOT NULL DEFAULT 1,
+                    next_run_at DATETIME NULL,
+                    last_run_at DATETIME NULL,
+                    last_status VARCHAR(16) NULL,
+                    last_message VARCHAR(255) NULL,
+                    created_by INT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_tasks_due (enabled, next_run_at),
+                    CONSTRAINT fk_tasks_server FOREIGN KEY (server_id) REFERENCES panel_servers(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            `);
+        }
     }
 ];
 
@@ -1210,21 +1238,38 @@ async function createPaymentReport(userId, amount, senderName, receiptPath) {
     return result.insertId;
 }
 
-async function listPayments({ status = null, userId = null, limit = 100 } = {}) {
+function paymentFilter({ status = null, userId = null, search = '' } = {}) {
     const where = [];
     const params = [];
     if (status) { where.push('p.status = ?'); params.push(status); }
     if (userId) { where.push('p.user_id = ?'); params.push(userId); }
+    if (search) {
+        const term = `%${String(search).replace(/[%_]/g, '').slice(0, 64)}%`;
+        where.push('(u.username LIKE ? OR p.sender_name LIKE ? OR p.reference_code LIKE ?)');
+        params.push(term, term, term);
+    }
+    return { clause: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
+}
+
+async function listPayments({ status = null, userId = null, search = '', limit = 100, offset = 0 } = {}) {
+    const { clause, params } = paymentFilter({ status, userId, search });
     const [rows] = await assertPool().query(
         `SELECT p.*, u.username, r.username AS reviewed_by_name
          FROM panel_payments p
          JOIN panel_users u ON u.id = p.user_id
          LEFT JOIN panel_users r ON r.id = p.reviewed_by
-         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-         ORDER BY p.created_at DESC LIMIT ?`,
-        [...params, Math.min(parseInt(limit, 10) || 100, 500)]
+         ${clause}
+         ORDER BY p.created_at DESC LIMIT ? OFFSET ?`,
+        [...params, Math.min(parseInt(limit, 10) || 100, 500), Math.max(parseInt(offset, 10) || 0, 0)]
     );
     return rows;
+}
+
+async function countPayments(filter = {}) {
+    const { clause, params } = paymentFilter(filter);
+    const [rows] = await assertPool().query(
+        `SELECT COUNT(*) AS total FROM panel_payments p JOIN panel_users u ON u.id = p.user_id ${clause}`, params);
+    return rows[0].total;
 }
 
 async function getPendingPayments() {
@@ -1412,6 +1457,31 @@ async function createCoupon(input) {
     }
 }
 
+/** Edit the mutable fields of a coupon (code and type stay fixed once issued). */
+async function updateCoupon(id, input = {}) {
+    const fields = {};
+    if (input.active !== undefined) fields.active = input.active ? 1 : 0;
+    if (input.value !== undefined) {
+        const value = Number(input.value);
+        if (!Number.isFinite(value) || value <= 0) throw httpError(400, 'İndirim değeri pozitif olmalı.');
+        const [rows] = await assertPool().query('SELECT type FROM panel_coupons WHERE id = ?', [parseInt(id, 10)]);
+        if (!rows.length) throw httpError(404, 'Kupon bulunamadı.');
+        if (rows[0].type === 'percent' && value > 100) throw httpError(400, 'Yüzde indirim 100\'ü geçemez.');
+        fields.value = money(value);
+    }
+    if (input.max_uses !== undefined) fields.max_uses = input.max_uses === '' || input.max_uses === null ? null : Math.max(1, parseInt(input.max_uses, 10) || 1);
+    if (input.per_user_limit !== undefined) fields.per_user_limit = Math.max(1, parseInt(input.per_user_limit, 10) || 1);
+    if (input.plan_slug !== undefined) fields.plan_slug = input.plan_slug ? String(input.plan_slug).slice(0, 32) : null;
+    if (input.expires_at !== undefined) {
+        const d = input.expires_at ? new Date(input.expires_at) : null;
+        if (d && isNaN(d.getTime())) throw httpError(400, 'Geçersiz bitiş tarihi.');
+        fields.expires_at = d;
+    }
+    const keys = Object.keys(fields);
+    if (!keys.length) return;
+    await assertPool().query(`UPDATE panel_coupons SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE id = ?`, [...keys.map(k => fields[k]), parseInt(id, 10)]);
+}
+
 async function setCouponActive(id, active) {
     await assertPool().query('UPDATE panel_coupons SET active = ? WHERE id = ?', [active ? 1 : 0, parseInt(id, 10)]);
 }
@@ -1504,6 +1574,25 @@ async function createAnnouncement({ title, body, level = 'info', expiresAt = nul
         [cleanTitle, body ? String(body).slice(0, 2000) : null, lvl, exp && !isNaN(exp.getTime()) ? exp : null, createdBy]
     );
     return result.insertId;
+}
+
+async function updateAnnouncement(id, input = {}) {
+    const fields = {};
+    if (input.active !== undefined) fields.active = input.active ? 1 : 0;
+    if (input.title !== undefined) {
+        const title = String(input.title || '').trim();
+        if (!title || title.length > 160) throw httpError(400, 'Başlık 1-160 karakter olmalı.');
+        fields.title = title;
+    }
+    if (input.body !== undefined) fields.body = input.body ? String(input.body).slice(0, 2000) : null;
+    if (input.level !== undefined) fields.level = ['info', 'success', 'warning', 'danger'].includes(input.level) ? input.level : 'info';
+    if (input.expires_at !== undefined) {
+        const d = input.expires_at ? new Date(input.expires_at) : null;
+        fields.expires_at = d && !isNaN(d.getTime()) ? d : null;
+    }
+    const keys = Object.keys(fields);
+    if (!keys.length) return;
+    await assertPool().query(`UPDATE panel_announcements SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE id = ?`, [...keys.map(k => fields[k]), parseInt(id, 10)]);
 }
 
 async function setAnnouncementActive(id, active) {
@@ -1634,14 +1723,14 @@ function isSystemSettingKey(key) {
 //  Admin user management
 // ============================================================================
 
+function userFilter(search) {
+    if (!search) return { where: '', params: [] };
+    const term = `%${String(search).replace(/[%_]/g, '').slice(0, 64)}%`;
+    return { where: 'WHERE u.username LIKE ? OR u.email LIKE ? OR u.last_login_ip LIKE ?', params: [term, term, term] };
+}
+
 async function listAllUsers({ search = '', limit = 200, offset = 0 } = {}) {
-    const params = [];
-    let where = '';
-    if (search) {
-        where = 'WHERE u.username LIKE ? OR u.email LIKE ?';
-        const term = `%${String(search).replace(/[%_]/g, '')}%`;
-        params.push(term, term);
-    }
+    const { where, params } = userFilter(search);
     const [rows] = await assertPool().query(
         `SELECT u.id, u.username, u.email, u.role, u.balance, u.suspended, u.created_at, u.last_login_at, u.last_login_ip,
                 u.locked_until, u.admin_note,
@@ -1650,6 +1739,12 @@ async function listAllUsers({ search = '', limit = 200, offset = 0 } = {}) {
         [...params, Math.min(parseInt(limit, 10) || 200, 1000), Math.max(parseInt(offset, 10) || 0, 0)]
     );
     return rows.map(r => ({ ...r, balance: money(r.balance), suspended: !!r.suspended }));
+}
+
+async function countUsers({ search = '' } = {}) {
+    const { where, params } = userFilter(search);
+    const [rows] = await assertPool().query(`SELECT COUNT(*) AS total FROM panel_users u ${where}`, params);
+    return rows[0].total;
 }
 
 async function countAdmins(excludeId = null) {
@@ -1755,6 +1850,74 @@ async function close() {
     initialized = false;
 }
 
+// ============================================================================
+//  Scheduled server tasks (validated by schedulerService before storage)
+// ============================================================================
+
+const TASK_COLUMNS = ['name', 'action', 'payload', 'schedule_type', 'time_of_day', 'weekdays', 'interval_minutes', 'enabled', 'next_run_at'];
+
+async function listServerTasks(serverId) {
+    const [rows] = await assertPool().query('SELECT * FROM panel_scheduled_tasks WHERE server_id = ? ORDER BY id ASC', [serverId]);
+    return rows.map(r => ({ ...r, enabled: !!r.enabled }));
+}
+
+async function getServerTask(serverId, taskId) {
+    const [rows] = await assertPool().query('SELECT * FROM panel_scheduled_tasks WHERE server_id = ? AND id = ?', [serverId, parseInt(taskId, 10)]);
+    return rows[0] ? { ...rows[0], enabled: !!rows[0].enabled } : null;
+}
+
+async function createServerTask(serverId, task, createdBy = null) {
+    const [count] = await assertPool().query('SELECT COUNT(*) AS c FROM panel_scheduled_tasks WHERE server_id = ?', [serverId]);
+    if (count[0].c >= 20) throw httpError(400, 'Bir sunucu için en fazla 20 görev tanımlanabilir.');
+    const [result] = await assertPool().query(
+        `INSERT INTO panel_scheduled_tasks (server_id, ${TASK_COLUMNS.join(', ')}, created_by) VALUES (?, ${TASK_COLUMNS.map(() => '?').join(', ')}, ?)`,
+        [serverId, ...TASK_COLUMNS.map(c => task[c] === undefined ? null : task[c]), createdBy]
+    );
+    return getServerTask(serverId, result.insertId);
+}
+
+async function updateServerTask(serverId, taskId, task) {
+    const keys = TASK_COLUMNS.filter(c => task[c] !== undefined);
+    if (keys.length) {
+        await assertPool().query(
+            `UPDATE panel_scheduled_tasks SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE server_id = ? AND id = ?`,
+            [...keys.map(k => task[k]), serverId, parseInt(taskId, 10)]
+        );
+    }
+    return getServerTask(serverId, taskId);
+}
+
+async function deleteServerTask(serverId, taskId) {
+    const [result] = await assertPool().query('DELETE FROM panel_scheduled_tasks WHERE server_id = ? AND id = ?', [serverId, parseInt(taskId, 10)]);
+    return result.affectedRows > 0;
+}
+
+async function deleteTasksForServer(serverId) {
+    await assertPool().query('DELETE FROM panel_scheduled_tasks WHERE server_id = ?', [serverId]);
+}
+
+/** Due tasks of rented, active servers. */
+async function listDueTasks(limit = 50) {
+    const [rows] = await assertPool().query(
+        `SELECT t.*, s.container_id, s.port, s.rcon_password, s.owner_id
+         FROM panel_scheduled_tasks t JOIN panel_servers s ON s.id = t.server_id
+         WHERE t.enabled = 1 AND t.next_run_at IS NOT NULL AND t.next_run_at <= ?
+           AND s.suspended = 0 AND s.is_pool = 0
+         ORDER BY t.next_run_at ASC LIMIT ?`,
+        // Compare against a driver-converted Date (not NOW()) so the panel
+        // and MySQL time zones can differ without shifting schedules.
+        [new Date(), limit]
+    );
+    return rows;
+}
+
+async function recordTaskRun(taskId, { status, message = null, nextRunAt = null }) {
+    await assertPool().query(
+        'UPDATE panel_scheduled_tasks SET last_run_at = ?, last_status = ?, last_message = ?, next_run_at = ? WHERE id = ?',
+        [new Date(), String(status).slice(0, 16), message ? String(message).slice(0, 255) : null, nextRunAt, taskId]
+    );
+}
+
 module.exports = {
     // lifecycle
     init, close, assertPool, withTransaction, httpError, money,
@@ -1781,7 +1944,9 @@ module.exports = {
     countFreeServersGlobal, countTrialUsesForUser,
     // comms
     notify, notifyAdmins, listNotifications, markNotificationsRead,
-    listAnnouncements, createAnnouncement, setAnnouncementActive, deleteAnnouncement,
+    listAnnouncements, createAnnouncement, setAnnouncementActive, updateAnnouncement, deleteAnnouncement,
+    listServerTasks, getServerTask, createServerTask, updateServerTask, deleteServerTask, deleteTasksForServer, listDueTasks, recordTaskRun,
+    countUsers, countPayments, updateCoupon,
     logAudit, listAudit,
     // settings
     getSetting, getSettingsMap, setSetting, listAllSettings, createSetting, updateSetting, deleteSetting, isSystemSettingKey,

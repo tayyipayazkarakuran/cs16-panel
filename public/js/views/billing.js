@@ -1,4 +1,4 @@
-import { append, state, api, h, clear, icon, btn, card, badge, table, field, input, fmtMoney, fmtDateTime, toast, toastError, withBusy, loading, copyable, openModal, errorBox } from '../core.js';
+import { append, state, api, h, clear, icon, btn, linkBtn, card, badge, table, field, input, fmtMoney, fmtDateTime, toast, toastError, withBusy, loading, copyable, openModal, errorBox } from '../core.js';
 import { loadSummary } from '../main.js';
 
 export const TX_TYPES = {
@@ -31,9 +31,9 @@ export async function viewReceipt(receiptPath) {
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const body = blob.type === 'application/pdf'
-            ? h('iframe', { src: url, title: 'Dekont', style: { width: '100%', height: '70vh', border: '0', background: '#fff' } })
-            : h('img', { src: url, alt: 'Dekont', style: { maxWidth: '100%', display: 'block', margin: '0 auto', borderRadius: '8px' } });
-        openModal({ title: 'Dekont', size: 'lg', body, footer: [h('a', { class: 'btn', href: url, download: filename }, icon('download'), 'İndir')], onClose: () => URL.revokeObjectURL(url) });
+            ? h('iframe', { src: url, title: 'Dekont', class: 'receipt-frame' })
+            : h('img', { src: url, alt: 'Dekont', class: 'receipt-img' });
+        openModal({ title: 'Dekont', size: 'lg', body, footer: [linkBtn('İndir', url, { iconName: 'download', attrs: { download: filename } })], onClose: () => URL.revokeObjectURL(url) });
     } catch (error) {
         toastError(error);
     }
@@ -47,7 +47,7 @@ export async function render({ root, setTitle, isCurrent }) {
     if (!isCurrent()) return;
     clear(root);
 
-    const balanceValue = h('div', { class: 'stat-value', style: { fontSize: '32px' } }, fmtMoney(state.user.balance));
+    const balanceValue = h('div', { class: 'stat-value stat-value-lg' }, fmtMoney(state.user.balance));
     const historyBox = h('div', {}, loading());
     const txBox = h('div', {}, loading());
     let txOffset = 0;
@@ -59,7 +59,7 @@ export async function render({ root, setTitle, isCurrent }) {
                 { label: 'Tarih', class: 'nowrap small', render: p => fmtDateTime(p.created_at) },
                 { label: 'Gönderen', key: 'sender_name' },
                 { label: 'Tutar', class: 'num', render: p => fmtMoney(p.amount) },
-                { label: 'Durum', render: p => h('div', {}, paymentStatusBadge(p.status), p.admin_note ? h('div', { class: 'small muted', style: { marginTop: '4px' } }, p.admin_note) : null) },
+                { label: 'Durum', render: p => h('div', {}, paymentStatusBadge(p.status), p.admin_note ? h('div', { class: 'small muted mt-1' }, p.admin_note) : null) },
                 { label: '', class: 'actions', render: p => (p.receipt_path ? btn('Dekont', { size: 'xs', iconName: 'receipt', onClick: () => viewReceipt(p.receipt_path) }) : '') }
             ], data.payments || [], { empty: 'Henüz ödeme bildiriminiz yok.' }));
         } catch (error) { clear(historyBox, h('div', { class: 'card-body' }, errorBox(error))); }
@@ -69,7 +69,7 @@ export async function render({ root, setTitle, isCurrent }) {
         try {
             const data = await api(`/api/account/transactions?limit=20&offset=${txOffset}`);
             const pager = h('div', { class: 'card-foot' },
-                h('span', { class: 'small muted', style: { marginRight: 'auto' } }, `${data.total} hareket`),
+                h('span', { class: 'left' }, `${data.total} hareket`),
                 btn('Önceki', { size: 'sm', disabled: txOffset === 0, onClick: () => { txOffset = Math.max(0, txOffset - 20); loadTransactions(); } }),
                 btn('Sonraki', { size: 'sm', disabled: txOffset + 20 >= data.total, onClick: () => { txOffset += 20; loadTransactions(); } }));
             clear(txBox, table([
@@ -85,7 +85,7 @@ export async function render({ root, setTitle, isCurrent }) {
     const amount = input({ type: 'number', min: info.min_deposit, step: '0.01', placeholder: `En az ${info.min_deposit}`, required: true });
     const sender = input({ maxlength: 120, placeholder: 'Havaleyi gönderen ad soyad', required: true, autocomplete: 'name' });
     const receipt = h('input', { type: 'file', accept: 'image/png,image/jpeg,application/pdf', class: 'input' });
-    const submit = btn('Ödeme bildirimi gönder', { variant: 'primary', iconName: 'send', attrs: { class: 'btn btn-primary btn-block' } });
+    const submit = btn('Ödeme bildirimi gönder', { variant: 'primary', iconName: 'send', block: true });
     submit.addEventListener('click', () => withBusy(submit, async () => {
         if (!amount.reportValidity() || !sender.reportValidity()) return;
         const form = new FormData();
@@ -104,11 +104,11 @@ export async function render({ root, setTitle, isCurrent }) {
     append(root, 
         h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Bakiye & Ödemeler'), h('p', { class: 'lead' }, 'Havale/EFT ile bakiye yükleyin; kiralama ve yenilemeler bakiyenizden düşülür.'))),
         h('div', { class: 'grid grid-3' },
-            card({ body: h('div', { class: 'stack', style: { gap: '8px' } }, h('div', { class: 'stat-label' }, icon('wallet', 'icon-sm'), 'Kullanılabilir bakiye'), balanceValue,
+            card({ body: h('div', { class: 'stack stack-sm' }, h('div', { class: 'stat-label' }, icon('wallet', 'icon-sm'), 'Kullanılabilir bakiye'), balanceValue,
                 h('p', { class: 'small muted' }, 'Bakiyeniz onaylanan ödemelerle güncellenir.'),
                 btn('Yenile', { size: 'sm', variant: 'ghost', iconName: 'refresh', onClick: async () => { await loadSummary(); balanceValue.textContent = fmtMoney(state.user.balance); loadTransactions(); } })) }),
             card({ title: '1. Havale / EFT yapın', iconName: 'receipt', body: h('div', { class: 'form-stack' },
-                h('pre', { class: 'log-box short', style: { whiteSpace: 'pre-wrap', color: 'var(--text)', fontSize: '13px' } }, info.iban_details || 'Banka bilgisi tanımlanmamış.'),
+                h('pre', { class: 'log-box short iban-box' }, info.iban_details || 'Banka bilgisi tanımlanmamış.'),
                 h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Açıklama kısmına mutlaka yazın'), copyable(info.reference_code)),
                 h('p', { class: 'small muted' }, 'Referans kodu ödemenizin hızlı eşleşmesini sağlar.')) }),
             card({ title: '2. Bildirim gönderin', iconName: 'send', body: h('div', { class: 'form-stack' },

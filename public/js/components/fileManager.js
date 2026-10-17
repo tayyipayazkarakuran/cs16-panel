@@ -1,7 +1,7 @@
 // Reusable file manager used for game server files (cstrike) and PHP sites.
 import {
-    h, clear, icon, btn, table, fmtBytes, fmtDateTime, toast, toastError, confirmDialog, promptDialog,
-    openModal, uploadWithProgress, withBusy, loading, dropdown, menuItem
+    h, clear, icon, btn, linkBtn, table, tableActions, fmtBytes, fmtDateTime, toast, toastError, confirmDialog, promptDialog, formDialog,
+    openModal, uploadWithProgress, withBusy, loading, dropdown, menuItem, menuSep, searchInput
 } from '../core.js';
 
 const EDITABLE = ['.cfg', '.ini', '.txt', '.sma', '.inc', '.lst', '.rc', '.php', '.html', '.htm', '.css', '.js', '.json', '.xml', '.md', '.env', '.yml', '.yaml', '.sql', '.conf', '.htaccess', '.log', '.res', '.gam'];
@@ -105,8 +105,17 @@ export function createFileManager(adapter) {
         menuItem('Klasör yükle', () => { close(); folderInput.click(); }, { iconName: 'folder' }),
         adapter.zipUploadUrl ? menuItem('ZIP yükle ve aç', () => { close(); zipInput.click(); }, { iconName: 'archive' }) : null));
 
+    let files = [];
+    const selected = new Set();
+    const search = searchInput({ placeholder: 'Bu klasörde ara…', onSearch: () => renderList() });
+    search.control.classList.add('input-sm');
+    const bulkDelete = btn('Seçilenleri sil', { size: 'sm', variant: 'danger', iconName: 'trash', onClick: removeSelected });
+    const bulkBar = h('div', { class: 'fm-toolbar', hidden: true }, h('strong', { class: 'small' }), h('span', { class: 'spacer' }),
+        btn('Seçimi temizle', { size: 'sm', variant: 'ghost', onClick: () => { selected.clear(); renderList(); } }), bulkDelete);
+
     const toolbar = h('div', { class: 'fm-toolbar' },
         crumbs,
+        search,
         h('div', { class: 'btn-group' },
             btn('Yeni dosya', { size: 'sm', iconName: 'filePlus', onClick: newFile }),
             btn('Yeni klasör', { size: 'sm', iconName: 'folderPlus', onClick: newFolder }),
@@ -114,7 +123,7 @@ export function createFileManager(adapter) {
             btn(null, { size: 'sm', iconName: 'refresh', title: 'Yenile', onClick: () => load(currentPath) })),
         fileInput, folderInput, zipInput);
 
-    const root = h('div', {}, toolbar, transfer, listBox);
+    const root = h('div', {}, toolbar, bulkBar, transfer, listBox);
 
     // Drag & drop files onto the list.
     root.addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); root.classList.add('dropzone-active'); } });
@@ -147,12 +156,16 @@ export function createFileManager(adapter) {
     }
 
     async function load(path = currentPath) {
+        if (path !== currentPath) { search.control.value = ''; selected.clear(); }
         currentPath = path;
         paintCrumbs();
         clear(listBox, loading('Dosyalar yükleniyor…'));
         try {
             const data = await adapter.list(path);
-            renderList(data.files || []);
+            files = data.files || [];
+            const names = new Set(files.map(f => f.path));
+            [...selected].forEach(p => { if (!names.has(p)) selected.delete(p); });
+            renderList();
         } catch (error) {
             clear(listBox, h('div', { class: 'table-empty text-danger' }, error.message));
         }
@@ -160,37 +173,70 @@ export function createFileManager(adapter) {
 
     function actionsFor(file) {
         const items = [];
-        if (!file.isDir && isEditable(file.name)) items.push(btn(null, { size: 'xs', iconName: 'edit', title: 'Düzenle', onClick: () => edit(file) }));
+        if (!file.isDir && isEditable(file.name)) items.push(btn(null, { size: 'xs', variant: 'ghost', iconName: 'edit', title: 'Düzenle', onClick: () => edit(file) }));
         if (!file.isDir && adapter.openUrl) {
             const url = adapter.openUrl(file);
-            if (url) items.push(h('a', { class: 'btn btn-xs btn-icon', href: url, target: '_blank', rel: 'noopener', title: 'Tarayıcıda aç' }, icon('external', 'icon-sm')));
+            if (url) items.push(linkBtn(null, url, { size: 'xs', variant: 'ghost', iconName: 'external', title: 'Tarayıcıda aç', attrs: { target: '_blank', rel: 'noopener' } }));
         }
-        if (!file.isDir && adapter.downloadUrl) items.push(h('a', { class: 'btn btn-xs btn-icon', href: adapter.downloadUrl(file.path), title: 'İndir', download: file.name }, icon('download', 'icon-sm')));
-        const more = dropdown(btn(null, { size: 'xs', iconName: 'more', title: 'Diğer işlemler' }), close => h('div', {},
+        if (!file.isDir && adapter.downloadUrl) items.push(linkBtn(null, adapter.downloadUrl(file.path), { size: 'xs', variant: 'ghost', iconName: 'download', title: 'İndir', attrs: { download: file.name } }));
+        const more = dropdown(btn(null, { size: 'xs', variant: 'ghost', iconName: 'more', title: 'Diğer işlemler' }), close => h('div', {},
             menuItem('Yeniden adlandır / taşı', () => { close(); rename(file); }, { iconName: 'edit' }),
             (!file.isDir && /\.zip$/i.test(file.name) && adapter.extract) ? menuItem('Buraya çıkar', () => { close(); extract(file); }, { iconName: 'archive' }) : null,
-            h('div', { class: 'sep' }),
+            menuSep(),
             menuItem('Sil', () => { close(); remove(file); }, { iconName: 'trash', danger: true })));
         items.push(more);
-        return h('div', { class: 'btn-group', style: { justifyContent: 'flex-end', flexWrap: 'nowrap', gap: '6px' } }, items);
+        return tableActions(items);
     }
 
-    function renderList(files) {
+    function paintBulkBar() {
+        bulkBar.hidden = !selected.size;
+        bulkBar.firstChild.textContent = `${selected.size} öğe seçildi`;
+    }
+
+    function renderList() {
+        const term = search.control.value.trim().toLowerCase();
+        const visible = files.filter(f => !term || f.name.toLowerCase().includes(term));
         const rows = [];
-        if (currentPath) rows.push({ name: '..', isDir: true, parent: true });
-        rows.push(...files);
+        if (currentPath && !term) rows.push({ name: '..', isDir: true, parent: true });
+        rows.push(...visible);
+        const allBox = h('input', { type: 'checkbox', 'aria-label': 'Tümünü seç', checked: visible.length > 0 && visible.every(f => selected.has(f.path)), onChange: e => {
+            visible.forEach(f => { if (e.target.checked) selected.add(f.path); else selected.delete(f.path); });
+            renderList();
+        } });
+        const dirFirst = (f, v) => (f.parent ? -Infinity : v);
         clear(listBox, table([
-            { label: 'Ad', render: f => {
-                const content = [icon(f.isDir ? 'folder' : 'file'), h('span', { class: 'truncate' }, f.parent ? '.. (üst klasör)' : f.name)];
+            { label: allBox, type: 'check', render: f => (f.parent ? null : h('input', { type: 'checkbox', 'aria-label': `${f.name} seç`, checked: selected.has(f.path), onChange: e => {
+                if (e.target.checked) selected.add(f.path); else selected.delete(f.path);
+                paintBulkBar();
+            } })) },
+            { label: 'Ad', key: 'name', render: f => {
+                const content = [icon(f.isDir ? 'folder' : 'file'), h('span', {}, f.parent ? '.. (üst klasör)' : f.name)];
                 if (f.isDir) return h('button', { class: 'file-name is-dir', type: 'button', onClick: () => load(f.parent ? currentPath.split('/').slice(0, -1).join('/') : f.path) }, content);
                 return isEditable(f.name)
                     ? h('button', { class: 'file-name', type: 'button', onClick: () => edit(f) }, content)
                     : h('span', { class: 'file-name' }, content);
-            } },
-            { label: 'Boyut', class: 'num nowrap', render: f => (f.isDir ? '' : fmtBytes(f.size)) },
-            { label: 'Değiştirilme', class: 'nowrap small muted hide-sm', render: f => (f.parent ? '' : fmtDateTime(f.mtime)) },
-            { label: '', class: 'actions', render: f => (f.parent ? '' : actionsFor(f)) }
-        ], rows, { empty: 'Bu klasör boş. Dosyaları buraya sürükleyip bırakabilirsiniz.' }));
+            }, sort: f => dirFirst(f, `${f.isDir ? 0 : 1}${f.name.toLowerCase()}`) },
+            { label: 'Boyut', key: 'size', type: 'num', render: f => (f.isDir ? null : fmtBytes(f.size)), sort: f => dirFirst(f, f.isDir ? -1 : f.size) },
+            { label: 'Değiştirilme', key: 'mtime', type: 'date', hideSm: true, render: f => (f.parent ? null : fmtDateTime(f.mtime)), sort: f => dirFirst(f, new Date(f.mtime || 0).getTime()) },
+            { label: '', type: 'actions', render: f => (f.parent ? null : actionsFor(f)) }
+        ], rows, { empty: term ? 'Eşleşen dosya yok.' : 'Bu klasör boş. Dosyaları buraya sürükleyip bırakabilirsiniz.' }));
+        paintBulkBar();
+    }
+
+    async function removeSelected() {
+        const paths = [...selected];
+        if (!paths.length) return;
+        const ok = await confirmDialog({ title: `${paths.length} öğe silinsin mi?`, message: `${paths.slice(0, 8).join('\n')}${paths.length > 8 ? `\n… ve ${paths.length - 8} öğe daha` : ''}\n\nKlasörler içerikleriyle birlikte kalıcı olarak silinir.`, confirmText: 'Hepsini sil', danger: true });
+        if (!ok) return;
+        await withBusy(bulkDelete, async () => {
+            const failed = [];
+            for (const p of paths) {
+                try { await adapter.remove(p); selected.delete(p); } catch (error) { failed.push(`${p}: ${error.message}`); }
+            }
+            if (failed.length) toast(`${paths.length - failed.length}/${paths.length} öğe silindi.\n${failed[0]}`, 'warning');
+            else toast(`${paths.length} öğe silindi.`, 'success', 2500);
+            load(currentPath);
+        });
     }
 
     function edit(file) {
@@ -355,14 +401,27 @@ export function createFileManager(adapter) {
 
     async function uploadZip(file) {
         if (busy) return toast('Devam eden bir yükleme var.', 'warning');
-        const wipe = adapter.zipWipeAllowed && !currentPath
-            ? await confirmDialog({ title: 'ZIP arşivini yükle', message: 'Mevcut site dosyaları silinip arşiv içeriğiyle değiştirilsin mi?\n\n"Vazgeç" seçerseniz dosyalar mevcut içeriğin üzerine eklenir.', confirmText: 'Evet, siteyi değiştir', danger: true })
-            : false;
+        const canWipe = adapter.zipWipeAllowed && !currentPath;
+        const options = await formDialog({
+            title: 'ZIP arşivini yükle',
+            intro: `${file.name} (${fmtBytes(file.size)}) ${currentPath ? `"${currentPath}" klasörüne` : 'site köküne'} açılacak.`,
+            fields: [
+                canWipe ? { name: 'mode', label: 'Mevcut dosyalar', type: 'select', value: 'merge', full: true, options: [
+                    { value: 'merge', label: 'Koru — arşivi mevcut dosyaların üzerine ekle' },
+                    { value: 'wipe', label: 'Sil — siteyi tamamen arşiv içeriğiyle değiştir' }] } : null,
+                adapter.zipStripRootOption ? { name: 'stripRoot', type: 'checkbox', value: true, full: true, checkLabel: 'Arşivdeki tek üst klasörü kaldır (örn. wordpress/ içindekileri doğrudan aç)' } : null
+            ].filter(Boolean),
+            submitText: 'Yükle ve aç'
+        });
+        if (!options) return;
+        const wipe = options.mode === 'wipe';
+        if (wipe && !(await confirmDialog({ title: 'Site dosyaları silinecek', message: 'Mevcut tüm site dosyaları silinip yerine arşiv içeriği açılacak. Bu işlem geri alınamaz.', confirmText: 'Siteyi değiştir', danger: true }))) return;
         begin(1, file.size, file.name);
         const form = new FormData();
-        form.append('file', file);
         form.append('path', currentPath);
         form.append('wipe', wipe ? 'true' : 'false');
+        if (adapter.zipStripRootOption) form.append('stripRoot', options.stripRoot ? 'true' : 'false');
+        form.append('file', file);
         try {
             const data = await uploadWithProgress(adapter.zipUploadUrl, form, {
                 register: handle => { activeUpload = handle; },

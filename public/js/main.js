@@ -1,5 +1,5 @@
 import {
-    state, api, h, clear, icon, btn, emit, on, toast, toastError, dropdown, menuItem, parseRoute, navigate,
+    state, api, h, clear, icon, btn, linkBtn, emit, on, toast, toastError, dropdown, menuItem, menuSep, parseRoute, navigate,
     fmtMoney, fmtRelative, serverStatus, loading, errorBox, emptyState
 } from './core.js';
 import { renderAuth } from './views/auth.js';
@@ -73,7 +73,7 @@ function navLink(path, label, iconName, { count = 0, meta = null } = {}) {
     return h('a', { class: 'nav-item', href: `#${path}`, dataset: { path } },
         icon(iconName), h('span', { class: 'label' }, label),
         meta ? h('span', { class: 'meta' }, meta) : null,
-        count ? h('span', { class: 'count' }, String(count)) : null);
+        count ? h('span', { class: 'count-pill' }, String(count)) : null);
 }
 
 function renderServerNav(container) {
@@ -84,33 +84,33 @@ function renderServerNav(container) {
         .filter(s => !term || `${s.name} ${s.port} ${s.owner}`.toLowerCase().includes(term));
     clear(container);
     if (!servers.length) {
-        container.appendChild(h('div', { class: 'nav-item muted', style: { cursor: 'default' } },
-            h('span', { class: 'label small' }, term ? 'Eşleşen sunucu yok' : 'Henüz sunucunuz yok')));
+        container.appendChild(h('div', { class: 'nav-empty' }, term ? 'Eşleşen sunucu yok' : 'Henüz sunucunuz yok'));
         return;
     }
     servers.slice(0, 60).forEach(s => {
         const status = serverStatus(s);
         container.appendChild(h('a', { class: 'nav-item', href: `#/servers/${s.id}`, dataset: { path: `/servers/${s.id}` }, title: `${s.name} (${s.port})` },
-            h('span', { class: `dot dot-${status.key}` }),
+            h('span', { class: 'nav-dot', title: status.label }, h('span', { class: `dot dot-${status.key}` })),
             h('span', { class: 'label' }, s.name),
             h('span', { class: 'meta' }, s.online ? `${s.players}/${s.maxPlayers}` : String(s.port))));
     });
 }
 
 function renderShell() {
-    const serverNav = h('div', { class: 'nav', style: { paddingTop: '0' } });
+    const serverNav = h('div', { class: 'nav' });
     const pendingCount = h('span');
     const filterInput = h('input', {
         class: 'input', type: 'search', placeholder: 'Sunucu ara…', 'aria-label': 'Sunucu ara',
         value: serverFilter, onInput: e => { serverFilter = e.target.value; renderServerNav(serverNav); markActiveNav(); }
     });
 
-    const adminNav = isAdmin() ? h('div', { class: 'nav', style: { paddingTop: '0' } },
-        h('div', { class: 'nav-section' }, 'Yönetim'),
+    const adminNav = isAdmin() ? h('div', { class: 'nav' },
+        h('div', { class: 'nav-section eyebrow' }, 'Yönetim'),
         navLink('/admin', 'Genel Bakış', 'gauge'),
         navLink('/admin/users', 'Kullanıcılar', 'users'),
         navLink('/admin/servers', 'Tüm Sunucular', 'server'),
         h('a', { class: 'nav-item', href: '#/admin/payments', dataset: { path: '/admin/payments' } }, icon('receipt'), h('span', { class: 'label' }, 'Ödemeler'), pendingCount),
+        navLink('/admin/transactions', 'Hesap Hareketleri', 'activity'),
         navLink('/admin/plans', 'Paketler & Kuponlar', 'tag'),
         navLink('/admin/announcements', 'Duyurular', 'megaphone'),
         navLink('/admin/infra', 'Altyapı', 'layers'),
@@ -119,15 +119,17 @@ function renderShell() {
 
     const userInitial = (state.user.username || '?').slice(0, 1);
     const sidebar = h('aside', { class: 'sidebar', id: 'sidebar', 'aria-label': 'Ana menü' },
-        h('a', { class: 'brand', href: '#/' }, h('span', { class: 'brand-mark' }, 'CS'),
-            h('span', {}, (state.summary && state.summary.settings.siteName) || 'CS 1.6 Panel', h('small', {}, 'Sunucu Yönetim Paneli'))),
+        h('div', { class: 'sidebar-head' },
+            h('a', { class: 'brand', href: '#/' }, h('span', { class: 'brand-mark' }, 'CS'),
+                h('span', {}, (state.summary && state.summary.settings.siteName) || 'CS 1.6 Panel', h('small', {}, 'Sunucu Yönetim Paneli'))),
+            btn(null, { variant: 'ghost', iconName: 'x', title: 'Menüyü kapat', className: 'sidebar-close', onClick: () => setDrawer(false) })),
         h('nav', { class: 'nav' },
             navLink('/', 'Panelim', 'home'),
             navLink('/rent', 'Sunucu Kirala', 'cart'),
             navLink('/billing', 'Bakiye & Ödemeler', 'wallet'),
             navLink('/account', 'Hesabım', 'user')),
-        h('div', { class: 'nav-section' }, isAdmin() ? 'Tüm Sunucular' : 'Sunucularım',
-            h('a', { href: '#/rent', title: 'Yeni sunucu kirala', class: 'muted' }, icon('plus', 'icon-sm'))),
+        h('div', { class: 'nav-section eyebrow' }, isAdmin() ? 'Kiralanan Sunucular' : 'Sunucularım',
+            h('a', { href: '#/rent', title: 'Yeni sunucu kirala', 'aria-label': 'Yeni sunucu kirala' }, icon('plus', 'icon-sm'))),
         h('div', { class: 'server-nav-filter' }, filterInput),
         serverNav,
         adminNav,
@@ -137,26 +139,25 @@ function renderShell() {
                 h('div', { class: 'who' }, h('strong', {}, state.user.username), h('span', {}, isAdmin() ? 'Yönetici' : 'Müşteri')),
                 btn(null, { variant: 'ghost', size: 'sm', iconName: 'logout', title: 'Çıkış yap', onClick: logout }))));
 
-    titleEl = h('div', { class: 'title' }, h('h1', {}, ''));
-    const balanceChip = h('a', { class: 'balance-chip', href: '#/billing', title: 'Bakiye' }, icon('wallet'), h('span', { class: 'label' }, 'Bakiye'), h('span', { id: 'balance-value' }, fmtMoney(state.user.balance)));
-    const bellBtn = h('button', { class: 'btn btn-ghost btn-icon icon-btn', type: 'button', 'aria-label': 'Bildirimler' }, icon('bell'));
+    titleEl = h('div', { class: 'title' });
+    const balanceChip = h('a', { class: 'balance-chip', href: '#/billing', title: 'Bakiye yükle' }, icon('wallet', 'icon-sm'), h('span', { class: 'label' }, 'Bakiye'), h('span', { id: 'balance-value' }, fmtMoney(state.user.balance)));
+    const bellBtn = btn(null, { variant: 'ghost', iconName: 'bell', title: 'Bildirimler', className: 'icon-btn' });
     const bell = dropdown(bellBtn, close => buildNotificationPanel(close), { className: 'notif-panel' });
-    const userBtn = h('button', { class: 'btn btn-ghost btn-icon', type: 'button', 'aria-label': 'Hesap menüsü' }, h('span', { class: 'avatar', style: { width: '28px', height: '28px', fontSize: '12px' } }, userInitial));
+    const userBtn = h('button', { class: 'btn btn-ghost btn-icon', type: 'button', 'aria-label': 'Hesap menüsü', title: 'Hesap menüsü' }, h('span', { class: 'avatar avatar-sm' }, userInitial));
     const userMenu = dropdown(userBtn, close => h('div', {},
-        h('div', { style: { padding: '8px 10px 10px' } }, h('strong', {}, state.user.username), h('div', { class: 'small muted' }, state.user.email || '')),
-        h('div', { class: 'sep' }),
+        h('div', { class: 'menu-head' }, h('strong', {}, state.user.username), h('div', { class: 'small muted' }, state.user.email || '')),
+        menuSep(),
         menuItem('Hesabım', () => { close(); navigate('/account'); }, { iconName: 'user' }),
         menuItem('Bakiye & Ödemeler', () => { close(); navigate('/billing'); }, { iconName: 'wallet' }),
-        h('div', { class: 'sep' }),
+        menuSep(),
         menuItem('Çıkış yap', () => { close(); logout(); }, { iconName: 'logout', danger: true })));
 
-    const topbar = h('header', { class: 'topbar' },
-        btn(null, { variant: 'ghost', iconName: 'menu', title: 'Menüyü aç', attrs: { class: 'btn btn-ghost btn-icon menu-toggle' }, onClick: () => document.body.classList.toggle('nav-open') }),
-        titleEl, balanceChip, bell, userMenu);
+    menuToggle = btn(null, { variant: 'ghost', iconName: 'menu', title: 'Menüyü aç', className: 'menu-toggle', attrs: { 'aria-controls': 'sidebar', 'aria-expanded': 'false' }, onClick: () => setDrawer(!document.body.classList.contains('nav-open')) });
+    const topbar = h('header', { class: 'topbar' }, menuToggle, titleEl, balanceChip, bell, userMenu);
 
     const announcements = h('div', { class: 'stack', id: 'announcements' });
     contentEl = h('main', { class: 'content', id: 'content', tabindex: '-1' });
-    clear(app, h('div', { class: 'shell' }, sidebar, h('div', { class: 'main' }, topbar, h('div', { class: 'content', style: { paddingBottom: '0' }, id: 'banner-zone' }, announcements), contentEl)));
+    clear(app, h('div', { class: 'shell' }, sidebar, h('div', { class: 'main' }, topbar, h('div', { class: 'content banner-zone', id: 'banner-zone' }, announcements), contentEl)));
 
     const paintBell = () => {
         const unread = state.summary ? state.summary.unreadNotifications : 0;
@@ -177,15 +178,35 @@ function renderShell() {
         on('summary-updated', paintSummary)
     ];
     if (isAdmin()) {
-        api('/api/payments/admin/list?status=pending&limit=200').then(data => {
+        const paintPending = () => api('/api/payments/admin/list?status=pending&limit=200').then(data => {
             const count = (data.payments || []).length;
-            if (count) clear(pendingCount, h('span', { class: 'count' }, String(count)));
+            clear(pendingCount, count ? h('span', { class: 'count-pill' }, String(count)) : null);
         }).catch(() => {});
+        paintPending();
+        cleanupsGlobal.push(on('payments-changed', paintPending), on('summary-updated', paintPending));
     }
     // Close the mobile drawer after navigating.
-    sidebar.addEventListener('click', e => { if (e.target.closest('a')) document.body.classList.remove('nav-open'); });
+    sidebar.addEventListener('click', e => { if (e.target.closest('a')) setDrawer(false); });
 }
 let cleanupsGlobal = [];
+let menuToggle = null;
+
+/** Mobile navigation drawer: scroll lock, Escape to close, focus moves into it. */
+function setDrawer(open) {
+    document.body.classList.toggle('nav-open', open);
+    document.body.classList.toggle('scroll-locked', open);
+    if (menuToggle) menuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const sidebar = document.getElementById('sidebar');
+    if (open && sidebar) {
+        const first = sidebar.querySelector('.nav-item');
+        if (first) setTimeout(() => first.focus(), 50);
+    } else if (!open && menuToggle && sidebar && sidebar.contains(document.activeElement)) {
+        menuToggle.focus();
+    }
+}
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && document.body.classList.contains('nav-open') && !document.querySelector('.modal-backdrop')) setDrawer(false);
+});
 
 function renderAnnouncements(container) {
     clear(container);
@@ -194,16 +215,16 @@ function renderAnnouncements(container) {
     const dismissed = new Set(JSON.parse(sessionStorageGet('dismissed-announcements') || '[]'));
     if (summary.settings.maintenance && isAdmin()) {
         container.appendChild(h('div', { class: 'alert alert-warning' }, icon('alert'), h('div', {}, h('strong', {}, 'Bakım modu açık'), h('p', {}, 'Yönetici olmayan kullanıcılar şu anda panele erişemiyor.')),
-            h('div', { class: 'alert-actions' }, h('a', { class: 'btn btn-sm', href: '#/admin/settings' }, 'Ayarlar'))));
+            h('div', { class: 'alert-actions' }, linkBtn('Ayarlar', '#/admin/settings', { size: 'sm' }))));
     }
     if (state.user.must_change_password) {
         container.appendChild(h('div', { class: 'alert alert-danger' }, icon('lock'), h('div', {}, h('strong', {}, 'Varsayılan şifre kullanıyorsunuz'), h('p', {}, 'Hesabınızın güvenliği için şifrenizi hemen değiştirin.')),
-            h('div', { class: 'alert-actions' }, h('a', { class: 'btn btn-sm btn-primary', href: '#/account' }, 'Şifreyi değiştir'))));
+            h('div', { class: 'alert-actions' }, linkBtn('Şifreyi değiştir', '#/account', { size: 'sm', variant: 'primary' }))));
     }
     (summary.announcements || []).filter(a => !dismissed.has(a.id)).forEach(a => {
         const el = h('div', { class: `alert alert-${a.level || 'info'}` }, icon(a.level === 'danger' || a.level === 'warning' ? 'alert' : 'megaphone'),
             h('div', {}, h('strong', {}, a.title), a.body ? h('p', {}, a.body) : null),
-            h('div', { class: 'alert-actions' }, btn(null, { variant: 'ghost', size: 'sm', iconName: 'x', title: 'Gizle', onClick: () => {
+            h('div', { class: 'alert-dismiss' }, btn(null, { variant: 'ghost', size: 'sm', iconName: 'x', title: 'Gizle', onClick: () => {
                 dismissed.add(a.id);
                 sessionStorageSet('dismissed-announcements', JSON.stringify([...dismissed]));
                 el.remove();
@@ -237,10 +258,10 @@ function buildNotificationPanel(close) {
                 if (n.link && n.link.startsWith('#/')) window.location.hash = n.link;
             } },
             h('span', { class: `dot dot-${variant}` }),
-            h('div', { style: { minWidth: '0', flex: '1' } }, h('strong', {}, n.title), n.body ? h('p', {}, n.body) : null, h('time', {}, fmtRelative(n.created_at)))));
+            h('div', { class: 'body' }, h('strong', {}, n.title), n.body ? h('p', {}, n.body) : null, h('time', {}, fmtRelative(n.created_at)))));
         });
     }).catch(e => clear(list, h('div', { class: 'table-empty' }, e.message)));
-    return h('div', {}, h('div', { class: 'notif-head' }, h('strong', {}, 'Bildirimler'), markAll), list);
+    return h('div', {}, h('div', { class: 'notif-head' }, h('strong', {}, 'Bildirimler'), h('div', { class: 'btn-group' }, markAll, linkBtn('Tümü', '#/account', { size: 'xs', variant: 'ghost', attrs: { onClick: () => close() } }))), list);
 }
 
 function markActiveNav() {
@@ -256,7 +277,9 @@ function markActiveNav() {
 export function setTitle(title, crumbs = []) {
     if (!titleEl) return;
     document.title = `${title} · ${(state.summary && state.summary.settings.siteName) || 'CS 1.6 Panel'}`;
-    clear(titleEl, crumbs.length ? h('div', { class: 'crumbs' }, crumbs.map(c => [h('a', { href: c.href }, c.label), h('span', {}, '/')])) : null, h('h1', {}, title));
+    clear(titleEl, h('nav', { class: 'crumbs', 'aria-label': 'Konum' },
+        crumbs.map(c => [h('a', { href: c.href }, c.label), h('span', { class: 'sep', 'aria-hidden': 'true' }, '/')]),
+        h('span', { class: 'current', 'aria-current': 'page' }, title)));
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +394,7 @@ on('session-expired', message => {
 
 on('maintenance', message => {
     if (state.user && state.user.role !== 'admin') {
-        clear(app, h('div', { class: 'auth-panel', style: { minHeight: '100vh' } },
+        clear(app, h('div', { class: 'auth-panel full-page' },
             h('div', { class: 'auth-card' }, emptyState({ iconName: 'settings', title: 'Bakım çalışması', text: message, action: btn('Tekrar dene', { variant: 'primary', onClick: () => window.location.reload() }) }))));
         stopServerPolling();
     }
@@ -400,7 +423,7 @@ async function boot() {
             return;
         }
     } catch (error) {
-        clear(app, h('div', { class: 'auth-panel', style: { minHeight: '100vh' } }, h('div', { class: 'auth-card' }, errorBox(error),
+        clear(app, h('div', { class: 'auth-panel full-page' }, h('div', { class: 'auth-card' }, errorBox(error),
             btn('Tekrar dene', { variant: 'primary', onClick: () => window.location.reload() }))));
         return;
     }

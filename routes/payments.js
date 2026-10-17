@@ -181,7 +181,14 @@ router.get('/receipt/:filename', async (req, res) => {
 router.get('/admin/list', requireAdmin, async (req, res) => {
     try {
         const status = ['pending', 'approved', 'rejected'].includes(req.query.status) ? req.query.status : null;
-        res.json({ success: true, payments: await req.panelDb.listPayments({ status, limit: req.query.limit || 200 }) });
+        const search = String(req.query.search || '').trim();
+        const limit = Math.min(parseInt(req.query.limit, 10) || 50, 500);
+        const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+        const [payments, total] = await Promise.all([
+            req.panelDb.listPayments({ status, search, limit, offset }),
+            req.panelDb.countPayments({ status, search })
+        ]);
+        res.json({ success: true, payments, total, limit, offset });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

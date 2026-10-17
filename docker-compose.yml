@@ -55,6 +55,7 @@ services:
       # Leave empty unless MYSQL_BIND_HOST exposes the port publicly.
       - MYSQL_PUBLIC_HOST=${MYSQL_PUBLIC_HOST:-}
       - MYSQL_PUBLIC_PORT=${MYSQL_PUBLIC_PORT:-3306}
+      - PANEL_TIMEZONE=${PANEL_TIMEZONE:-Europe/Istanbul}
       # PHP sites: base URL (sites at <base>/<port>/) or a template with {port},
       # e.g. https://php-{port}.example.com with wildcard DNS → cs-php
       - PHP_PUBLIC_BASE_URL=${PHP_PUBLIC_BASE_URL:-http://${HOST_IP:-127.0.0.1}:8081}

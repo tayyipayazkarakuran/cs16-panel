@@ -7,7 +7,11 @@ A Docker-based management panel for Counter-Strike 1.6 game servers. Create, man
 - **Membership** — Self sign-up (username + e-mail + terms), password strength rules, login by username or e-mail, account lockout and rate limiting, single-use password-reset links, "log out of all devices", notifications.
 - **Billing & paywall** — Balance ledger (every credit/debit is recorded), bank-transfer deposits with reference codes and receipt review, admin-defined plans (price, slots, FPS, features), 1/3/6/12-month periods with discounts, coupons, trial plan, auto-renew, expiry reminders (7/3/1 days), automatic suspension (HTTP 402 paywall) and reclamation after a grace period.
 - **Admin tools** — Dashboard with revenue/server metrics, user management (balance adjust, suspend, reset link, force logout, delete), server operations (extend, suspend, transfer, change plan, release, bulk actions), payment review, plans & coupons, announcements, infrastructure health/restart, maintenance mode, settings and a full audit log.
-- **Server Management** — Start/stop/restart (containers are recreated automatically if missing), reset, live console over WebSocket, logs and crash logs, validated `server.cfg` settings.
+- **Server Management** — Start/stop/restart (containers are recreated automatically if missing), reset, live console over WebSocket, validated `server.cfg` settings.
+- **Resource usage** — Live CPU / RAM / disk / network per server (docker stats) with history sparklines; admin view of host load, memory, disk and every container.
+- **Scheduled tasks** — Daily, weekly or interval jobs per server: restart, in-game announcement (`say`), map change or a single RCON command. Evaluated in `PANEL_TIMEZONE` (default `Europe/Istanbul`).
+- **Launch parameters** — `-pingboost`, `+sys_ticrate`, `+fps_max`, `-insecure`, `-nomaster` from the panel (`cstrike/panel_startup.cfg`, applied on restart; only whitelisted values are read by `entrypoint.sh`).
+- **Logs & chat** — Live log with search/follow/download, in-game chat history parsed from `cstrike/logs` (filter, ban by SteamID), log file downloads, crash reports.
 - **File Manager** — Upload with progress, folders, drag & drop, ZIP extraction, rename, mkdir, streamed downloads, in-browser editor.
 - **FastDL** — Automatic sync of client assets; config files (`*.cfg`, `*.ini`) are never published.
 - **MySQL** — One database + user per server, password rotation, schema browser, query console scoped to the server's own database, SQL export. Credentials are written to `addons/amxmodx/configs/sql.cfg` and the website config automatically.
@@ -108,6 +112,8 @@ cs16-panel/
 ├── billingService.js      # Quotes, rentals, renewals, plan changes
 ├── lifecycleService.js    # Reminders, auto-renew, suspension, reclamation
 ├── poolService.js         # Rental pool maintenance (setting: pool_ports)
+├── schedulerService.js    # Scheduled server tasks (restart / say / map / rcon)
+├── serverOps.js           # Shared power actions, RCON and docker stats helpers
 ├── gameContainer.js       # Game container creation/recreation
 ├── phpSiteService.js      # Per-server PHP sites, templates, domains
 ├── fastdlService.js       # FastDL sync
@@ -146,7 +152,8 @@ cs16-panel/
 2. İmajları yeniden derleyin: `docker compose build cs-panel cs-php` ve oyun imajı (entrypoint değişti).
 3. Panel ilk açılışta veritabanını otomatik taşır (migration); eski fiyat ayarları paketlere dönüştürülür.
 4. Web siteleri için `PHP_PUBLIC_BASE_URL` ayarlayın. Özel alan adı kullanılacaksa alan adının A kaydı PHP sunucusunu göstermelidir; `{port}` içeren bir adres (`http://php-{port}.example.com`) wildcard DNS ile alt alan adı kullanır.
-5. FastDL adresi `FASTDL_PUBLIC_URL` ile belirlenir; kiralama havuzu portları Yönetim → Ayarlar → `pool_ports` ile değiştirilir.
+5. Zamanlanmış görevler `PANEL_TIMEZONE` (varsayılan Europe/Istanbul) saat dilimine göre çalışır. Başlatma parametreleri için oyun imajının yeni `entrypoint.sh` ile derlenmiş olması gerekir.
+6. FastDL adresi `FASTDL_PUBLIC_URL` ile belirlenir; kiralama havuzu portları Yönetim → Ayarlar → `pool_ports` ile değiştirilir.
 
 ## License
 
